@@ -1,0 +1,170 @@
+{
+  "entities": {
+    "Student": {
+      "title": "Student",
+      "description": "Enrolled student at the developmental centre",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "dob": { "type": "string" },
+        "guardianName": { "type": "string" },
+        "guardianContact": { "type": "string" },
+        "admissionDate": { "type": "string" },
+        "primaryDiagnosis": { "type": "string" },
+        "medicalHistory": { "type": "string" },
+        "allergies": { "type": "string" },
+        "iepGoals": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "guardianName", "guardianContact", "admissionDate"]
+    },
+    "Fee": {
+      "title": "Fee",
+      "description": "Fee invoice or billing record for a student",
+      "type": "object",
+      "properties": {
+        "studentId": { "type": "string" },
+        "studentName": { "type": "string" },
+        "type": { "type": "string" },
+        "amount": { "type": "number" },
+        "amountPaid": { "type": "number" },
+        "dueDate": { "type": "string" },
+        "status": { "type": "string", "enum": ["Paid", "Pending", "Overdue", "Partially Paid"] },
+        "paymentMode": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["studentId", "studentName", "amount", "dueDate", "status"]
+    },
+    "Attendance": {
+      "title": "Attendance",
+      "description": "Attendance and therapy session records",
+      "type": "object",
+      "properties": {
+        "studentId": { "type": "string" },
+        "studentName": { "type": "string" },
+        "date": { "type": "string" },
+        "status": { "type": "string", "enum": ["Present", "Absent", "Late"] },
+        "therapyType": { "type": "string" },
+        "therapyTypes": { "type": "array" },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["studentId", "studentName", "date", "status"]
+    },
+    "FinanceTransaction": {
+      "title": "FinanceTransaction",
+      "description": "Financial income, operating expense, capital asset purchase, or partner investment transaction",
+      "type": "object",
+      "properties": {
+        "date": { "type": "string" },
+        "type": { "type": "string", "enum": ["Income", "Expense", "Asset", "Investment", "Deposit"] },
+        "purchaseType": { "type": "string", "enum": ["Expense", "Asset", "Investment", "Deposit"] },
+        "category": { "type": "string" },
+        "amount": { "type": "number" },
+        "description": { "type": "string" },
+        "partnerName": { "type": "string" },
+        "paymentMode": { "type": "string" },
+        "assetDetails": {
+          "type": "object",
+          "properties": {
+            "assetName": { "type": "string" },
+            "category": { "type": "string" },
+            "purchaseDate": { "type": "string" },
+            "cost": { "type": "number" },
+            "usefulLifeYears": { "type": "number" },
+            "locationOrRoom": { "type": "string" },
+            "serialNumber": { "type": "string" },
+            "condition": { "type": "string" }
+          }
+        },
+        "depositDetails": {
+          "type": "object",
+          "properties": {
+            "depositCategory": { "type": "string" },
+            "payeeName": { "type": "string" },
+            "premisesOrAccount": { "type": "string" },
+            "refundable": { "type": "boolean" },
+            "referenceNumber": { "type": "string" },
+            "termsOrDuration": { "type": "string" }
+          }
+        },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["date", "type", "category", "amount"]
+    },
+    "ActivityLog": {
+      "title": "ActivityLog",
+      "description": "Audit log for changes in the application",
+      "type": "object",
+      "properties": {
+        "action": { "type": "string" },
+        "description": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["action", "description", "userEmail", "timestamp"]
+    },
+    "ChartOfAccount": {
+      "title": "ChartOfAccount",
+      "description": "General ledger account in the Chart of Accounts",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string" },
+        "name": { "type": "string" },
+        "type": { "type": "string", "enum": ["Asset", "Liability", "Equity", "Revenue", "Expense"] },
+        "subtype": { "type": "string" },
+        "normalBalance": { "type": "string", "enum": ["Debit", "Credit"] },
+        "description": { "type": "string" },
+        "isSystem": { "type": "boolean" },
+        "isActive": { "type": "boolean" },
+        "linkedCategory": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["code", "name", "type", "subtype", "normalBalance"]
+    },
+    "AuthCredentialSettings": {
+      "title": "AuthCredentialSettings",
+      "description": "Administrative credential settings and portal preferences",
+      "type": "object",
+      "properties": {
+        "username": { "type": "string" },
+        "password": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["username", "password"]
+    }
+  },
+  "firestore": {
+    "/students/{studentId}": {
+      "schema": { "$ref": "#/entities/Student" },
+      "description": "Collection of enrolled students"
+    },
+    "/fees/{feeId}": {
+      "schema": { "$ref": "#/entities/Fee" },
+      "description": "Collection of fee records"
+    },
+    "/attendance/{attendanceId}": {
+      "schema": { "$ref": "#/entities/Attendance" },
+      "description": "Collection of attendance records"
+    },
+    "/finances/{financeId}": {
+      "schema": { "$ref": "#/entities/FinanceTransaction" },
+      "description": "Collection of financial income, expense, and asset transactions"
+    },
+    "/activityLogs/{logId}": {
+      "schema": { "$ref": "#/entities/ActivityLog" },
+      "description": "Audit and activity log entries"
+    },
+    "/chartOfAccounts/{accountId}": {
+      "schema": { "$ref": "#/entities/ChartOfAccount" },
+      "description": "Chart of accounts general ledger definitions"
+    },
+    "/systemSettings/{settingId}": {
+      "schema": { "$ref": "#/entities/AuthCredentialSettings" },
+      "description": "System settings and admin credential configuration"
+    }
+  }
+}
