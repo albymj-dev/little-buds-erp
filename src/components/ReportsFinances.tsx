@@ -613,7 +613,8 @@ const ReportsFinances = () => {
     attendance.filter(a => a.date.startsWith(currentMonthPrefix) && (a.therapyType || (a.therapyTypes && a.therapyTypes.length > 0))).forEach(a => {
       const therapies = a.therapyTypes || (a.therapyType ? [a.therapyType] : []);
       therapies.forEach(t => {
-        breakdown[t] = (breakdown[t] || 0) + 1;
+        const key = (t === 'Behavioral' || t === 'Social Learning') ? 'Special Education' : t === 'Speech' ? 'Speech & Language' : t === 'OT' ? 'Motor & Sensory Play' : t;
+        breakdown[key] = (breakdown[key] || 0) + 1;
       });
     });
     

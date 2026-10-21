@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { getStudents, deleteStudent } from '../services/api';
 import { Student } from '../types';
-import { Plus, Search, FileText, Trash2, Award, ClipboardList } from 'lucide-react';
+import { Plus, Search, FileText, Trash2, Award, ClipboardList, MapPin } from 'lucide-react';
 import StudentFormModal from './StudentFormModal';
 import StudentReportModal from './StudentReportModal';
 import DeleteConfirmModal from './DeleteConfirmModal';
@@ -70,7 +70,8 @@ const StudentsList = () => {
 
   const filteredStudents = students.filter(s => 
     s.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    s.guardianName.toLowerCase().includes(searchTerm.toLowerCase())
+    s.guardianName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    (s.address && s.address.toLowerCase().includes(searchTerm.toLowerCase()))
   );
 
   return (
@@ -135,8 +136,14 @@ const StudentsList = () => {
                       <tr key={student.id}>
                         <td className="whitespace-nowrap py-4 pl-4 pr-3 text-sm font-medium text-gray-900 sm:pl-6">{student.name}</td>
                         <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">
-                          {student.guardianName}
-                          <div className="text-xs text-gray-400">{student.guardianContact}</div>
+                          <div className="font-medium text-gray-900">{student.guardianName}</div>
+                          <div className="text-xs text-gray-500">{student.guardianContact}</div>
+                          {student.address && (
+                            <div className="text-[11px] text-gray-500 flex items-center mt-0.5 max-w-[220px] truncate" title={student.address}>
+                              <MapPin className="w-3 h-3 mr-1 text-gray-400 shrink-0" />
+                              <span className="truncate">{student.address}</span>
+                            </div>
+                          )}
                         </td>
                         <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">
                           <span className="inline-flex rounded-full bg-indigo-50 px-2.5 py-0.5 text-xs font-semibold leading-5 text-indigo-700 border border-indigo-100">

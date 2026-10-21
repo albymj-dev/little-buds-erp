@@ -33,27 +33,44 @@ export interface Student {
   allergies: string;
   iepGoals?: string; // Kept for backwards compatibility
   developmentalGoals?: string; // Child care terminology: milestones and goals
+  address?: string; // Residential address / location
   createdAt?: string;
 }
 
 export type FeeStatus = 'Paid' | 'Pending' | 'Overdue' | 'Partially Paid';
+export type FeeBillingBasis = 'fixed' | 'hourly' | 'per_session' | 'custom';
+export type FeeType =
+  | 'Monthly Tuition'
+  | 'Activity Session'
+  | 'Registration'
+  | 'Therapy Session'
+  | 'Care / Activity Session'
+  | 'Hourly Daycare'
+  | 'Per Session'
+  | 'Custom'
+  | string;
 
 export interface Fee {
   id?: string;
   studentId: string;
   studentName: string;
-  type: 'Monthly Tuition' | 'Activity Session' | 'Registration' | 'Therapy Session';
+  type: FeeType;
+  customTypeName?: string;
+  billingBasis?: FeeBillingBasis;
+  rate?: number;
+  units?: number;
   amount: number;
   amountPaid: number;
   dueDate: string;
   status: FeeStatus;
   paymentMode?: string;
+  notes?: string;
   createdAt?: string;
 }
 
 export type AttendanceStatus = 'Present' | 'Absent' | 'Late';
-export type TherapyType = 'Speech' | 'OT' | 'Behavioral';
-export type ActivityType = 'Speech & Communication' | 'Motor & Physical Play' | 'Social & Behavioral';
+export type TherapyType = 'Speech' | 'OT' | 'Behavioral' | 'Special Education';
+export type ActivityType = 'Speech & Language' | 'Motor & Sensory Play' | 'Special Education';
 
 export interface Attendance {
   id?: string;

@@ -16,6 +16,7 @@ const StudentFormModal: React.FC<Props> = ({ student, onClose, onSave }) => {
     dob: '',
     guardianName: '',
     guardianContact: '',
+    address: '',
     admissionDate: new Date().toISOString().split('T')[0],
     primaryDiagnosis: '',
     medicalHistory: '',
@@ -34,6 +35,7 @@ const StudentFormModal: React.FC<Props> = ({ student, onClose, onSave }) => {
         dob: student.dob,
         guardianName: student.guardianName,
         guardianContact: student.guardianContact,
+        address: student.address || '',
         admissionDate: student.admissionDate,
         primaryDiagnosis: student.developmentalFocus || student.primaryDiagnosis || '',
         medicalHistory: student.careNotes || student.medicalHistory || '',
@@ -54,6 +56,7 @@ const StudentFormModal: React.FC<Props> = ({ student, onClose, onSave }) => {
     try {
       const payload = {
         ...formData,
+        address: formData.address?.trim() || '',
         developmentalFocus: formData.primaryDiagnosis,
         careNotes: formData.medicalHistory,
         learningGoals: formData.iepGoals,
@@ -134,6 +137,18 @@ const StudentFormModal: React.FC<Props> = ({ student, onClose, onSave }) => {
               <div>
                 <label className="block text-sm font-medium text-gray-700">Guardian Contact (Phone/WhatsApp) *</label>
                 <input type="text" name="guardianContact" required value={formData.guardianContact} onChange={handleChange} className="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm border py-2 px-3" />
+              </div>
+
+              <div className="sm:col-span-2">
+                <label className="block text-sm font-medium text-gray-700">Student Residential Address</label>
+                <textarea
+                  name="address"
+                  rows={2}
+                  placeholder="House/Apartment number, street name, area/locality, city, pincode..."
+                  value={formData.address}
+                  onChange={handleChange}
+                  className="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm border py-2 px-3 placeholder:text-gray-400"
+                />
               </div>
               
               <div>

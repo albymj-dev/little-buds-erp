@@ -283,6 +283,9 @@ const InvoicePreviewModal: React.FC<Props> = ({
                 <div className="text-xs text-slate-600 mt-1 space-y-0.5">
                   <p><span className="text-slate-400">Guardian:</span> {student?.guardianName || 'Parent / Guardian'}</p>
                   <p><span className="text-slate-400">Contact:</span> {student?.guardianContact || 'N/A'}</p>
+                  {student?.address && (
+                    <p><span className="text-slate-400">Address:</span> {student.address}</p>
+                  )}
                   {(student?.developmentalFocus || student?.primaryDiagnosis) && (
                     <p><span className="text-slate-400">Focus:</span> {student.developmentalFocus || student.primaryDiagnosis}</p>
                   )}
@@ -313,7 +316,7 @@ const InvoicePreviewModal: React.FC<Props> = ({
                   </div>
                   <div>
                     <span className="text-slate-400 block">Billing Category</span>
-                    <span className="font-semibold text-slate-800">{fee.type}</span>
+                    <span className="font-semibold text-slate-800">{fee.customTypeName || fee.type}</span>
                   </div>
                 </div>
               </div>
@@ -336,10 +339,25 @@ const InvoicePreviewModal: React.FC<Props> = ({
                   <tr className="hover:bg-slate-50/50 transition-colors">
                     <td className="py-4 px-4 text-slate-400 font-mono text-xs">01</td>
                     <td className="py-4 px-4">
-                      <div className="font-semibold text-slate-900">{fee.type}</div>
-                      <div className="text-xs text-slate-500 mt-0.5">
-                        Child Care & Early Development Session
-                      </div>
+                      <div className="font-semibold text-slate-900">{fee.customTypeName || fee.type}</div>
+                      {fee.billingBasis === 'hourly' && fee.units && fee.rate ? (
+                        <div className="text-xs text-sky-700 font-medium mt-0.5">
+                          ⏱️ Hourly Daycare: {fee.units} Hours @ ₹{fee.rate.toFixed(2)}/hr
+                        </div>
+                      ) : fee.billingBasis === 'per_session' && fee.units && fee.rate ? (
+                        <div className="text-xs text-indigo-700 font-medium mt-0.5">
+                          🎯 Session Basis: {fee.units} Sessions @ ₹{fee.rate.toFixed(2)}/session
+                        </div>
+                      ) : (
+                        <div className="text-xs text-slate-500 mt-0.5">
+                          Child Care & Early Development Service
+                        </div>
+                      )}
+                      {fee.notes && (
+                        <div className="text-xs text-stone-600 bg-amber-50 border border-amber-200/60 rounded px-2 py-1 mt-1.5 inline-block font-sans">
+                          <span className="font-semibold text-amber-900">Note:</span> {fee.notes}
+                        </div>
+                      )}
                     </td>
                     <td className="py-4 px-4 text-slate-600 text-xs">{formattedDueDate}</td>
                     <td className="py-4 px-4 text-right font-medium text-slate-900">

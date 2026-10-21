@@ -149,9 +149,10 @@ export async function generateInvoicePdf(
 
   // Left card: BILL TO
   const colWidth = (contentWidth - 6) / 2; // ~88mm
+  const cardHeight = student?.address ? 38 : 34;
   doc.setFillColor(248, 250, 252); // slate-50
   doc.setDrawColor(226, 232, 240); // slate-200
-  doc.roundedRect(margin, yPos, colWidth, 34, 2, 2, 'FD');
+  doc.roundedRect(margin, yPos, colWidth, cardHeight, 2, 2, 'FD');
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(8.5);
@@ -170,7 +171,14 @@ export async function generateInvoicePdf(
   const guardianContact = student?.guardianContact || 'N/A';
   doc.text(`Guardian: ${guardianName}`, margin + 4, yPos + 19);
   doc.text(`Contact: ${guardianContact}`, margin + 4, yPos + 24);
-  if (student?.developmentalFocus || student?.primaryDiagnosis) {
+
+  if (student?.address) {
+    const addrSummary = student.address.length > 40 ? student.address.slice(0, 37) + '...' : student.address;
+    doc.text(`Address: ${addrSummary}`, margin + 4, yPos + 29);
+    if (student?.developmentalFocus || student?.primaryDiagnosis) {
+      doc.text(`Focus: ${student.developmentalFocus || student.primaryDiagnosis}`, margin + 4, yPos + 34);
+    }
+  } else if (student?.developmentalFocus || student?.primaryDiagnosis) {
     doc.text(`Focus: ${student.developmentalFocus || student.primaryDiagnosis}`, margin + 4, yPos + 29);
   } else {
     doc.text(`Child ID: ${fee.studentId || 'N/A'}`, margin + 4, yPos + 29);
@@ -180,7 +188,7 @@ export async function generateInvoicePdf(
   const rightCardX = margin + colWidth + 6;
   doc.setFillColor(248, 250, 252);
   doc.setDrawColor(226, 232, 240);
-  doc.roundedRect(rightCardX, yPos, colWidth, 34, 2, 2, 'FD');
+  doc.roundedRect(rightCardX, yPos, colWidth, cardHeight, 2, 2, 'FD');
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(8.5);
@@ -229,8 +237,21 @@ export async function generateInvoicePdf(
   doc.text(fee.status.toUpperCase(), rightCardX + 40, yPos + 25.2, { align: 'center' });
 
   // Section 3: Line Items Table
-  const tableStartY = yPos + 40;
+  const tableStartY = yPos + cardHeight + 6;
   const balance = Math.max(0, fee.amount - (fee.amountPaid || 0));
+
+  let itemDesc = fee.customTypeName || fee.type;
+  if (fee.billingBasis === 'hourly' || (fee.units && fee.rate && fee.type.toLowerCase().includes('hour'))) {
+    itemDesc = `${fee.type} (${fee.units || 1} hrs @ ₹${fee.rate || fee.amount}/hr)`;
+  } else if (fee.billingBasis === 'per_session' || (fee.units && fee.rate && fee.type.toLowerCase().includes('session'))) {
+    itemDesc = `${fee.type} (${fee.units || 1} sessions @ ₹${fee.rate || fee.amount}/session)`;
+  } else if (fee.customTypeName) {
+    itemDesc = `${fee.customTypeName} (${fee.type})`;
+  }
+
+  if (fee.notes) {
+    itemDesc += `\nNote: ${fee.notes}`;
+  }
 
   autoTable(doc, {
     startY: tableStartY,
@@ -239,7 +260,7 @@ export async function generateInvoicePdf(
     body: [
       [
         '1',
-        `${fee.type} - Early Learning & Child Care Program`,
+        itemDesc,
         formattedDueDate,
         `₹${fee.amount.toFixed(2)}`,
         `₹${(fee.amountPaid || 0).toFixed(2)}`,
@@ -717,6 +738,7 @@ export function generatePrintableHtml(
         <div style="font-size:12px; color:#475569;">
           <div><strong>Guardian:</strong> ${student?.guardianName || 'Parent / Guardian'}</div>
           <div><strong>Contact:</strong> ${student?.guardianContact || 'N/A'}</div>
+          ${student?.address ? `<div><strong>Address:</strong> ${student.address}</div>` : ''}
           ${student?.developmentalFocus || student?.primaryDiagnosis ? `<div><strong>Focus:</strong> ${student.developmentalFocus || student.primaryDiagnosis}</div>` : ''}
         </div>
       </div>
@@ -757,8 +779,11 @@ export function generatePrintableHtml(
         <tr>
           <td>01</td>
           <td>
-            <strong>${fee.type}</strong><br>
-            <span style="color:#64748b; font-size:11px;">Early Learning, Care & Activity Program</span>
+            <strong>${fee.customTypeName || fee.type}</strong>
+            ${fee.billingBasis === 'hourly' && fee.units && fee.rate ? `<div style="font-size:11px; color:#0369a1; margin-top:2px; font-weight:600;">⏱️ Hourly Basis: ${fee.units} Hours @ ₹${fee.rate.toFixed(2)}/hr</div>` : ''}
+            ${fee.billingBasis === 'per_session' && fee.units && fee.rate ? `<div style="font-size:11px; color:#4338ca; margin-top:2px; font-weight:600;">🎯 Session Basis: ${fee.units} Sessions @ ₹${fee.rate.toFixed(2)}/session</div>` : ''}
+            ${fee.billingBasis === 'custom' && fee.customTypeName ? `<div style="font-size:11px; color:#7c3aed; margin-top:2px;">✨ Custom Fee Item</div>` : ''}
+            ${fee.notes ? `<div style="font-size:11px; color:#475569; font-style:italic; margin-top:4px; padding:3px 8px; background:#f8fafc; border-left:3px solid #74B72E; border-radius:2px;">📝 Note: ${fee.notes}</div>` : ''}
           </td>
           <td>${formattedDueDate}</td>
           <td class="text-right">₹${fee.amount.toFixed(2)}</td>

@@ -47,10 +47,16 @@ const StudentReportModal: React.FC<Props> = ({ student, onClose }) => {
     doc.text(`Name: ${student.name}`, 14, 40);
     doc.text(`DOB: ${student.dob}`, 14, 46);
     doc.text(`Guardian: ${student.guardianName} (${student.guardianContact})`, 14, 52);
-    doc.text(`Admission Date: ${student.admissionDate}`, 14, 58);
-    doc.text(`Developmental Focus: ${student.developmentalFocus || student.primaryDiagnosis || 'Early Childhood Learning'}`, 14, 64);
+    if (student.address) {
+      doc.text(`Address: ${student.address}`, 14, 58);
+      doc.text(`Admission Date: ${student.admissionDate}`, 14, 64);
+      doc.text(`Developmental Focus: ${student.developmentalFocus || student.primaryDiagnosis || 'Early Childhood Learning'}`, 14, 70);
+    } else {
+      doc.text(`Admission Date: ${student.admissionDate}`, 14, 58);
+      doc.text(`Developmental Focus: ${student.developmentalFocus || student.primaryDiagnosis || 'Early Childhood Learning'}`, 14, 64);
+    }
     
-    let yPos = 74;
+    let yPos = student.address ? 80 : 74;
     
     doc.setFontSize(14);
     doc.text('Fee History', 14, yPos);
@@ -68,10 +74,22 @@ const StudentReportModal: React.FC<Props> = ({ student, onClose }) => {
     doc.setFontSize(14);
     doc.text('Recent Attendance & Activity (Last 30 records)', 14, yPos);
     
+    const formatSessionName = (t?: string): string => {
+      if (!t) return 'Daycare / Play';
+      if (t === 'Speech') return 'Speech & Language';
+      if (t === 'OT') return 'Motor & Sensory Play';
+      if (t === 'Behavioral' || t === 'Social Learning') return 'Special Education';
+      return t;
+    };
+
     autoTable(doc, {
       startY: yPos + 4,
       head: [['Date', 'Status', 'Program / Activity']],
-      body: attendance.slice(0, 30).map(a => [a.date, a.status, a.therapyTypes?.join(', ') || a.therapyType || 'Daycare / Play']),
+      body: attendance.slice(0, 30).map(a => [
+        a.date,
+        a.status,
+        a.therapyTypes?.length ? a.therapyTypes.map(formatSessionName).join(', ') : formatSessionName(a.therapyType)
+      ]),
       theme: 'grid',
       headStyles: { fillColor: [79, 70, 229] }
     });
@@ -120,6 +138,9 @@ const StudentReportModal: React.FC<Props> = ({ student, onClose }) => {
                     <div><span className="text-gray-500">DOB:</span> {student.dob}</div>
                     <div><span className="text-gray-500">Admission:</span> {student.admissionDate}</div>
                     <div><span className="text-gray-500">Developmental Focus:</span> {student.developmentalFocus || student.primaryDiagnosis || 'Early Childhood Learning'}</div>
+                    {student.address && (
+                      <div><span className="text-gray-500">Address:</span> {student.address}</div>
+                    )}
                     <div className="md:col-span-2"><span className="text-gray-500">Allergies & Dietary:</span> {student.allergies || 'None'}</div>
                     <div className="md:col-span-2"><span className="text-gray-500">Learning Goals:</span> {student.learningGoals || student.iepGoals || 'General Development'}</div>
                   </div>
@@ -177,7 +198,11 @@ const StudentReportModal: React.FC<Props> = ({ student, onClose }) => {
                                     {a.status}
                                   </span>
                                 </td>
-                                <td className="px-3 py-2 text-sm text-gray-500">{a.therapyTypes?.join(', ') || a.therapyType || 'Daycare / Play'}</td>
+                                <td className="px-3 py-2 text-sm text-gray-500">
+                                  {a.therapyTypes?.length
+                                    ? a.therapyTypes.map(t => (t === 'Behavioral' || t === 'Social Learning') ? 'Special Education' : t === 'Speech' ? 'Speech & Language' : t === 'OT' ? 'Motor & Sensory Play' : t).join(', ')
+                                    : (a.therapyType === 'Behavioral' || a.therapyType === 'Social Learning') ? 'Special Education' : a.therapyType === 'Speech' ? 'Speech & Language' : a.therapyType === 'OT' ? 'Motor & Sensory Play' : a.therapyType || 'Daycare / Play'}
+                                </td>
                               </tr>
                             ))}
                           </tbody>
