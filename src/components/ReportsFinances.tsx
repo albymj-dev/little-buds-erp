@@ -4,6 +4,7 @@ import { getFees, getAttendanceByMonth, getTransactions, addTransaction, updateT
 import { Fee, Attendance, FinanceTransaction, AssetDetails, DepositDetails, TransactionType, PurchaseType, ChartOfAccountItem } from '../types';
 import { getChartOfAccounts } from '../services/chartOfAccountsService';
 import ChartOfAccountsView from './ChartOfAccountsView';
+import LedgerWiseReportView from './LedgerWiseReportView';
 import { startOfMonth, endOfMonth, format, subMonths, parseISO } from 'date-fns';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -108,11 +109,15 @@ const ReportsFinances = () => {
 
   const [searchParams, setSearchParams] = useSearchParams();
   const initialUrlTab = searchParams.get('tab');
-  const validTabs = ['dashboard', 'pnl', 'balance', 'partners', 'receipts', 'cashflow', 'accounts'] as const;
+  const validTabs = ['dashboard', 'pnl', 'balance', 'ledger', 'accounts', 'partners', 'receipts', 'cashflow'] as const;
 
   // Tabs
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'pnl' | 'balance' | 'partners' | 'receipts' | 'cashflow' | 'accounts'>(
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'pnl' | 'balance' | 'ledger' | 'accounts' | 'partners' | 'receipts' | 'cashflow'>(
     validTabs.includes(initialUrlTab as any) ? (initialUrlTab as any) : 'dashboard'
+  );
+
+  const [selectedLedgerAccountCode, setSelectedLedgerAccountCode] = useState<string | undefined>(
+    searchParams.get('account') || undefined
   );
 
   // Chart of Accounts general ledger state
@@ -1811,6 +1816,17 @@ const ReportsFinances = () => {
             )}
           </button>
           <button
+            onClick={() => setActiveTab('ledger')}
+            className={`${
+              activeTab === 'ledger'
+                ? 'border-indigo-600 text-indigo-700 font-bold'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            } whitespace-nowrap pb-3.5 px-1 border-b-2 font-medium text-sm flex items-center gap-2 transition-colors focus:outline-none`}
+          >
+            <BookOpen className="h-4 w-4 text-indigo-600" />
+            Ledger Wise Report
+          </button>
+          <button
             onClick={() => setActiveTab('accounts')}
             className={`${
               activeTab === 'accounts'
@@ -1818,7 +1834,7 @@ const ReportsFinances = () => {
                 : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
             } whitespace-nowrap pb-3.5 px-1 border-b-2 font-medium text-sm flex items-center gap-2 transition-colors focus:outline-none`}
           >
-            <BookOpen className="h-4 w-4 text-indigo-600" />
+            <Layers className="h-4 w-4 text-indigo-600" />
             Chart of Accounts
             {accountsList.length > 0 && (
               <span className="ml-1 bg-indigo-50 text-indigo-700 text-xs px-2 py-0.5 rounded-full font-bold border border-indigo-200">
@@ -5085,6 +5101,16 @@ const ReportsFinances = () => {
         </div>
       )}
 
+      {/* TAB: LEDGER WISE REPORT */}
+      {activeTab === 'ledger' && (
+        <LedgerWiseReportView
+          accounts={accountsList}
+          transactions={transactions}
+          fees={fees}
+          initialAccountCode={selectedLedgerAccountCode}
+        />
+      )}
+
       {/* TAB: CHART OF ACCOUNTS GENERAL LEDGER */}
       {activeTab === 'accounts' && (
         <ChartOfAccountsView
@@ -5099,6 +5125,10 @@ const ReportsFinances = () => {
             depreciationTotal: bs.totalFixedAssets > 0 ? (pnl.totalDepreciation || 0) : 0
           }}
           onAccountsUpdated={loadAccounts}
+          onViewLedger={(acc) => {
+            setSelectedLedgerAccountCode(acc.code);
+            setActiveTab('ledger');
+          }}
           onRecordTransactionForAccount={(acc) => {
             if (acc.type === 'Asset' && acc.subtype === 'Fixed Asset') {
               handleOpenAddForm('Asset');

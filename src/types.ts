@@ -148,3 +148,37 @@ export interface ChartOfAccountItem {
   linkedCategory?: string;
   createdAt?: string;
 }
+
+export interface LedgerEntry {
+  id: string;
+  date: string;
+  voucherNumber?: string;
+  accountCode: string;
+  accountName: string;
+  counterAccountCode?: string;
+  counterAccountName?: string;
+  particulars: string;
+  paymentMode?: string;
+  reference?: string;
+  debit: number;
+  credit: number;
+  balance: number;
+  balanceType: 'Dr' | 'Cr';
+  transactionType?: string;
+  rawItem?: any;
+}
+
+export interface AccountLedgerReport {
+  account: ChartOfAccountItem;
+  periodLabel: string;
+  startDate: string;
+  endDate: string;
+  openingBalance: number;
+  openingBalanceType: 'Dr' | 'Cr';
+  entries: LedgerEntry[];
+  totalDebit: number;
+  totalCredit: number;
+  netMovement: number;
+  closingBalance: number;
+  closingBalanceType: 'Dr' | 'Cr';
+}

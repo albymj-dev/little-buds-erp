@@ -15,7 +15,8 @@ import {
   Layers,
   HelpCircle,
   X,
-  FileSpreadsheet
+  FileSpreadsheet,
+  FileText
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { ChartOfAccountItem, AccountType, AccountNormalBalance, FinanceTransaction, Fee } from '../types';
@@ -34,6 +35,7 @@ interface ChartOfAccountsViewProps {
   };
   onAccountsUpdated: () => void;
   onRecordTransactionForAccount?: (account: ChartOfAccountItem) => void;
+  onViewLedger?: (account: ChartOfAccountItem) => void;
 }
 
 export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
@@ -42,7 +44,8 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
   fees,
   liquidStats,
   onAccountsUpdated,
-  onRecordTransactionForAccount
+  onRecordTransactionForAccount,
+  onViewLedger
 }) => {
   const [selectedType, setSelectedType] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
@@ -587,6 +590,17 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
                       {/* Actions */}
                       <td className="py-3 px-4 text-right">
                         <div className="flex items-center justify-end space-x-1.5">
+                          {onViewLedger && (
+                            <button
+                              type="button"
+                              onClick={() => onViewLedger(account)}
+                              className="px-2 py-1 text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded transition-colors flex items-center gap-1"
+                              title="View Account Ledger Report"
+                            >
+                              <FileText className="w-3 h-3" />
+                              <span className="hidden sm:inline">Ledger</span>
+                            </button>
+                          )}
                           <button
                             onClick={() => handleOpenEditModal(account)}
                             className="p-1.5 text-gray-500 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors"
