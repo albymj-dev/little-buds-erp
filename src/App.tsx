@@ -10,6 +10,7 @@ import FeeManagement from './components/FeeManagement';
 import AttendanceTracker from './components/AttendanceTracker';
 import ReportsFinances from './components/ReportsFinances';
 import ActivityLogViewer from './components/ActivityLogViewer';
+import PublicInvoiceView from './components/PublicInvoiceView';
 
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
   const { currentUser, loading } = useAuth();
@@ -30,6 +31,7 @@ export default function App() {
         <BrowserRouter>
           <Routes>
             <Route path="/login" element={<Login />} />
+            <Route path="/invoice/:id" element={<PublicInvoiceView />} />
             
             <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
               <Route index element={<Dashboard />} />

@@ -5,6 +5,7 @@ import { Fee, Attendance, FinanceTransaction, AssetDetails, DepositDetails, Tran
 import { getChartOfAccounts } from '../services/chartOfAccountsService';
 import ChartOfAccountsView from './ChartOfAccountsView';
 import LedgerWiseReportView from './LedgerWiseReportView';
+import { FinancialDetailsSettingsTab } from './FinancialDetailsSettingsTab';
 import { startOfMonth, endOfMonth, format, subMonths, parseISO } from 'date-fns';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -109,10 +110,10 @@ const ReportsFinances = () => {
 
   const [searchParams, setSearchParams] = useSearchParams();
   const initialUrlTab = searchParams.get('tab');
-  const validTabs = ['dashboard', 'pnl', 'balance', 'ledger', 'accounts', 'partners', 'receipts', 'cashflow'] as const;
+  const validTabs = ['dashboard', 'pnl', 'balance', 'ledger', 'accounts', 'partners', 'receipts', 'cashflow', 'financial'] as const;
 
   // Tabs
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'pnl' | 'balance' | 'ledger' | 'accounts' | 'partners' | 'receipts' | 'cashflow'>(
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'pnl' | 'balance' | 'ledger' | 'accounts' | 'partners' | 'receipts' | 'cashflow' | 'financial'>(
     validTabs.includes(initialUrlTab as any) ? (initialUrlTab as any) : 'dashboard'
   );
 
@@ -140,14 +141,31 @@ const ReportsFinances = () => {
   // Partner filter and search in Partners tab
   const [partnerFilter, setPartnerFilter] = useState<string>('ALL');
   const [partnerSearchQuery, setPartnerSearchQuery] = useState<string>('');
-  const [investmentToEdit, setInvestmentToEdit] = useState<FinanceTransaction | null>(null);
-  const [editFormData, setEditFormData] = useState({
-    date: '',
+  // Unified Transaction Editing State (for Expenses, Income, Assets, Deposits, Investments)
+  const [transactionToEdit, setTransactionToEdit] = useState<FinanceTransaction | null>(null);
+  const [editTxData, setEditTxData] = useState({
+    date: format(new Date(), 'yyyy-MM-dd'),
+    type: 'Expense' as 'Expense' | 'Income' | 'Asset' | 'Investment' | 'Deposit',
+    category: EXPENSE_CATEGORIES[0],
     amount: '',
-    partnerName: '',
-    category: PARTNER_INVESTMENT_CATEGORIES[0],
     paymentMode: PAYMENT_MODES[0],
-    description: ''
+    description: '',
+    // Partner investment
+    partnerName: '',
+    // Capital Asset
+    assetName: '',
+    usefulLifeYears: '5',
+    locationOrRoom: 'Sensory Gym',
+    condition: 'Good',
+    serialNumber: '',
+    assetNotes: '',
+    // Security Deposit
+    depositCategory: SECURITY_DEPOSIT_CATEGORIES[0],
+    payeeName: '',
+    premisesOrAccount: '',
+    refundable: true,
+    referenceNumber: '',
+    termsOrDuration: ''
   });
   const [isUpdating, setIsUpdating] = useState(false);
   const [viewReceiptModal, setViewReceiptModal] = useState<FinanceTransaction | null>(null);
@@ -456,56 +474,183 @@ const ReportsFinances = () => {
     }
   };
 
-  const handleOpenEditInvestment = (tx: FinanceTransaction) => {
-    setInvestmentToEdit(tx);
-    setEditFormData({
-      date: tx.date,
-      amount: tx.amount.toString(),
-      partnerName: tx.partnerName || '',
-      category: tx.category || PARTNER_INVESTMENT_CATEGORIES[0],
+  const handleOpenEditTransaction = (tx: FinanceTransaction) => {
+    let resolvedType: 'Expense' | 'Income' | 'Asset' | 'Investment' | 'Deposit' = 'Expense';
+    if (isInvestmentTx(tx)) resolvedType = 'Investment';
+    else if (isAssetTx(tx)) resolvedType = 'Asset';
+    else if (isDepositTx(tx)) resolvedType = 'Deposit';
+    else if (isIncomeTx(tx)) resolvedType = 'Income';
+    else resolvedType = 'Expense';
+
+    const defaultCategory = resolvedType === 'Income'
+      ? (INCOME_CATEGORIES.includes(tx.category) ? tx.category : INCOME_CATEGORIES[0])
+      : resolvedType === 'Deposit'
+      ? (SECURITY_DEPOSIT_CATEGORIES.includes(tx.category) ? tx.category : (tx.depositDetails?.depositCategory || SECURITY_DEPOSIT_CATEGORIES[0]))
+      : resolvedType === 'Asset'
+      ? (ASSET_CATEGORIES.includes(tx.category) ? tx.category : (tx.assetDetails?.category || ASSET_CATEGORIES[0]))
+      : resolvedType === 'Investment'
+      ? (PARTNER_INVESTMENT_CATEGORIES.includes(tx.category) ? tx.category : PARTNER_INVESTMENT_CATEGORIES[0])
+      : (EXPENSE_CATEGORIES.includes(tx.category) ? tx.category : EXPENSE_CATEGORIES[0]);
+
+    setTransactionToEdit(tx);
+    setEditTxData({
+      date: tx.date || format(new Date(), 'yyyy-MM-dd'),
+      type: resolvedType,
+      category: defaultCategory,
+      amount: tx.amount ? tx.amount.toString() : '',
       paymentMode: tx.paymentMode || PAYMENT_MODES[0],
-      description: tx.description || ''
+      description: tx.description || '',
+      partnerName: tx.partnerName || '',
+      assetName: tx.assetDetails?.assetName || tx.description || '',
+      usefulLifeYears: tx.assetDetails?.usefulLifeYears ? tx.assetDetails.usefulLifeYears.toString() : '5',
+      locationOrRoom: tx.assetDetails?.locationOrRoom || 'Sensory Gym',
+      condition: tx.assetDetails?.condition || 'Good',
+      serialNumber: tx.assetDetails?.serialNumber || '',
+      assetNotes: tx.assetDetails?.notes || '',
+      depositCategory: tx.depositDetails?.depositCategory || tx.category || SECURITY_DEPOSIT_CATEGORIES[0],
+      payeeName: tx.depositDetails?.payeeName || '',
+      premisesOrAccount: tx.depositDetails?.premisesOrAccount || '',
+      refundable: tx.depositDetails?.refundable !== false,
+      referenceNumber: tx.depositDetails?.referenceNumber || '',
+      termsOrDuration: tx.depositDetails?.termsOrDuration || ''
     });
   };
 
-  const handleEditInvestmentSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!investmentToEdit?.id) return;
+  const handleOpenEditInvestment = (tx: FinanceTransaction) => {
+    handleOpenEditTransaction(tx);
+  };
 
-    const parsedAmount = parseFloat(editFormData.amount);
-    if (!editFormData.date || Number.isNaN(parsedAmount) || parsedAmount <= 0) {
-      alert("Please enter a valid date and positive amount.");
-      return;
-    }
-    if (!editFormData.partnerName.trim()) {
-      alert("Please specify the partner name.");
+  const handleEditTransactionSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!transactionToEdit?.id) return;
+
+    const parsedAmount = parseFloat(editTxData.amount);
+    if (!editTxData.date || Number.isNaN(parsedAmount) || parsedAmount <= 0) {
+      addToast('error', 'Please enter a valid date and positive amount.');
       return;
     }
 
     setIsUpdating(true);
     try {
-      const updatedData: Partial<FinanceTransaction> = {
-        date: editFormData.date,
-        amount: parsedAmount,
-        partnerName: editFormData.partnerName.trim(),
-        category: editFormData.category,
-        paymentMode: editFormData.paymentMode,
-        description: editFormData.description.trim() || `Capital investment by ${editFormData.partnerName.trim()}`,
-        type: 'Investment',
-        purchaseType: 'Investment'
-      };
+      let updatedData: Partial<FinanceTransaction>;
 
-      await updateTransaction(investmentToEdit.id, updatedData);
-      
+      if (editTxData.type === 'Investment') {
+        if (!editTxData.partnerName.trim()) {
+          addToast('error', 'Please specify the partner name.');
+          setIsUpdating(false);
+          return;
+        }
+        updatedData = {
+          date: editTxData.date,
+          amount: parsedAmount,
+          partnerName: editTxData.partnerName.trim(),
+          category: editTxData.category || 'Initial Capital Contribution',
+          paymentMode: editTxData.paymentMode || PAYMENT_MODES[0],
+          description: editTxData.description.trim() || `Capital investment by ${editTxData.partnerName.trim()}`,
+          type: 'Investment',
+          purchaseType: 'Investment'
+        };
+      } else if (editTxData.type === 'Income') {
+        updatedData = {
+          date: editTxData.date,
+          amount: parsedAmount,
+          category: editTxData.category || 'Other Income',
+          paymentMode: editTxData.paymentMode || PAYMENT_MODES[0],
+          description: editTxData.description.trim(),
+          type: 'Income',
+          purchaseType: 'Expense'
+        };
+      } else if (editTxData.type === 'Deposit') {
+        const depositInfo: DepositDetails = {
+          depositCategory: editTxData.depositCategory || editTxData.category || SECURITY_DEPOSIT_CATEGORIES[0],
+          payeeName: editTxData.payeeName?.trim() || 'Landlord / Authority',
+          refundable: editTxData.refundable !== false
+        };
+        if (editTxData.premisesOrAccount?.trim()) {
+          depositInfo.premisesOrAccount = editTxData.premisesOrAccount.trim();
+        }
+        if (editTxData.referenceNumber?.trim()) {
+          depositInfo.referenceNumber = editTxData.referenceNumber.trim();
+        }
+        if (editTxData.termsOrDuration?.trim()) {
+          depositInfo.termsOrDuration = editTxData.termsOrDuration.trim();
+        }
+        if (editTxData.description?.trim()) {
+          depositInfo.notes = editTxData.description.trim();
+        }
+
+        updatedData = {
+          date: editTxData.date,
+          amount: parsedAmount,
+          category: editTxData.depositCategory || editTxData.category || 'Security Deposit',
+          paymentMode: editTxData.paymentMode || PAYMENT_MODES[0],
+          type: 'Deposit',
+          purchaseType: 'Deposit',
+          description: editTxData.description?.trim() || `Security Deposit paid to ${editTxData.payeeName?.trim() || 'Landlord'} (${depositInfo.depositCategory})`,
+          depositDetails: depositInfo
+        };
+      } else if (editTxData.type === 'Asset') {
+        const assetInfo: AssetDetails = {
+          assetName: editTxData.assetName.trim() || editTxData.description.trim() || editTxData.category,
+          category: editTxData.category || ASSET_CATEGORIES[0],
+          purchaseDate: editTxData.date,
+          cost: parsedAmount,
+          usefulLifeYears: editTxData.usefulLifeYears ? parseInt(editTxData.usefulLifeYears) : 5,
+          locationOrRoom: editTxData.locationOrRoom.trim() || 'Centre Facility',
+          condition: (editTxData.condition as any) || 'Good'
+        };
+        if (editTxData.serialNumber?.trim()) {
+          assetInfo.serialNumber = editTxData.serialNumber.trim();
+        }
+        const assetNote = editTxData.assetNotes?.trim() || editTxData.description?.trim();
+        if (assetNote) {
+          assetInfo.notes = assetNote;
+        }
+
+        updatedData = {
+          date: editTxData.date,
+          amount: parsedAmount,
+          category: editTxData.category || ASSET_CATEGORIES[0],
+          paymentMode: editTxData.paymentMode || PAYMENT_MODES[0],
+          type: 'Asset',
+          purchaseType: 'Asset',
+          description: editTxData.assetName ? `${editTxData.assetName} (${editTxData.category})` : editTxData.description,
+          assetDetails: assetInfo
+        };
+      } else {
+        // Operating Expense
+        updatedData = {
+          date: editTxData.date,
+          amount: parsedAmount,
+          category: editTxData.category || EXPENSE_CATEGORIES[0],
+          paymentMode: editTxData.paymentMode || PAYMENT_MODES[0],
+          type: 'Expense',
+          purchaseType: 'Expense',
+          description: editTxData.description.trim()
+        };
+      }
+
+      await updateTransaction(transactionToEdit.id, updatedData);
+
       // Optimistically update local transactions
-      setTransactions(prev => prev.map(t => t.id === investmentToEdit.id ? { ...t, ...updatedData } as FinanceTransaction : t));
-      
-      addToast('success', `Investment record for "${editFormData.partnerName.trim()}" updated successfully.`);
-      setInvestmentToEdit(null);
+      setTransactions(prev => prev.map(t => t.id === transactionToEdit.id ? { ...t, ...updatedData } as FinanceTransaction : t));
+
+      const typeLabel = editTxData.type === 'Expense'
+        ? 'Operating Expense'
+        : editTxData.type === 'Income'
+        ? 'Income Record'
+        : editTxData.type === 'Asset'
+        ? 'Capital Asset'
+        : editTxData.type === 'Deposit'
+        ? 'Security Deposit'
+        : 'Partner Investment';
+
+      addToast('success', `${typeLabel} updated successfully.`);
+      setTransactionToEdit(null);
       loadData();
     } catch (error) {
-      console.error("Error updating investment:", error);
-      addToast('error', 'Failed to update partner investment. Please try again.');
+      console.error("Error updating transaction:", error);
+      addToast('error', 'Failed to update transaction. Please try again.');
     } finally {
       setIsUpdating(false);
     }
@@ -1879,6 +2024,17 @@ const ReportsFinances = () => {
           >
             <DollarSign className="h-4 w-4" />
             Cash Flow
+          </button>
+          <button
+            onClick={() => setActiveTab('financial')}
+            className={`${
+              activeTab === 'financial'
+                ? 'border-emerald-600 text-emerald-700 font-bold'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            } whitespace-nowrap pb-3.5 px-1 border-b-2 font-medium text-sm flex items-center gap-2 transition-colors focus:outline-none`}
+          >
+            <Landmark className="h-4 w-4 text-emerald-600" />
+            Financial Details
           </button>
         </nav>
       </div>
@@ -3606,8 +3762,8 @@ const ReportsFinances = () => {
                               <Printer className="h-4 w-4" />
                             </button>
                             <button
-                              onClick={() => handleOpenEditInvestment(transaction)}
-                              className="p-1.5 text-gray-500 hover:text-indigo-600 hover:bg-gray-100 rounded-md transition-colors"
+                              onClick={() => handleOpenEditTransaction(transaction)}
+                              className="p-1.5 text-gray-500 hover:text-purple-600 hover:bg-purple-50 rounded-md transition-colors"
                               title="Edit Partner Investment"
                             >
                               <Pencil className="h-4 w-4" />
@@ -3631,6 +3787,13 @@ const ReportsFinances = () => {
                             >
                               <Eye className="h-4 w-4" />
                             </button>
+                            <button
+                              onClick={() => handleOpenEditTransaction(transaction)}
+                              className="p-1.5 text-gray-500 hover:text-teal-600 hover:bg-teal-50 rounded-md transition-colors"
+                              title="Edit Security Deposit"
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </button>
                           </>
                         )}
 
@@ -3650,16 +3813,42 @@ const ReportsFinances = () => {
                             >
                               <Eye className="h-4 w-4" />
                             </button>
+                            <button
+                              onClick={() => handleOpenEditTransaction(transaction)}
+                              className="p-1.5 text-gray-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"
+                              title="Edit Capital Asset"
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </button>
                           </>
                         )}
 
                         {isExpense && (
+                          <>
+                            <button
+                              onClick={() => setSelectedVoucherTx(transaction)}
+                              className="p-1.5 text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 rounded-md transition-colors"
+                              title="Print Payment Voucher"
+                            >
+                              <Printer className="h-4 w-4" />
+                            </button>
+                            <button
+                              onClick={() => handleOpenEditTransaction(transaction)}
+                              className="p-1.5 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
+                              title="Edit Operating Expense"
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </button>
+                          </>
+                        )}
+
+                        {isIncome && (
                           <button
-                            onClick={() => setSelectedVoucherTx(transaction)}
-                            className="p-1.5 text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 rounded-md transition-colors"
-                            title="Print Payment Voucher"
+                            onClick={() => handleOpenEditTransaction(transaction)}
+                            className="p-1.5 text-gray-500 hover:text-green-600 hover:bg-green-50 rounded-md transition-colors"
+                            title="Edit Income Record"
                           >
-                            <Printer className="h-4 w-4" />
+                            <Pencil className="h-4 w-4" />
                           </button>
                         )}
 
@@ -4224,6 +4413,13 @@ const ReportsFinances = () => {
                                 <Eye className="h-4 w-4" />
                               </button>
                               <button
+                                onClick={() => handleOpenEditTransaction(asset)}
+                                className="p-1 text-gray-500 hover:text-indigo-600 hover:bg-indigo-50 rounded"
+                                title="Edit Capital Asset"
+                              >
+                                <Pencil className="h-4 w-4" />
+                              </button>
+                              <button
                                 onClick={() => setTransactionToDelete(asset)}
                                 className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded"
                                 title="Delete Asset"
@@ -4386,6 +4582,13 @@ const ReportsFinances = () => {
                                 title="Inspect Security Deposit Details"
                               >
                                 <Eye className="h-4 w-4" />
+                              </button>
+                              <button
+                                onClick={() => handleOpenEditTransaction(deposit)}
+                                className="p-1 text-gray-500 hover:text-teal-600 hover:bg-teal-50 rounded"
+                                title="Edit Security Deposit"
+                              >
+                                <Pencil className="h-4 w-4" />
                               </button>
                               <button
                                 onClick={() => setTransactionToDelete(deposit)}
@@ -5141,122 +5344,398 @@ const ReportsFinances = () => {
         />
       )}
 
-      {/* EDIT PARTNER INVESTMENT MODAL */}
-      {investmentToEdit && (
+      {/* TAB: FINANCIAL & BANKING SETTINGS */}
+      {activeTab === 'financial' && (
+        <FinancialDetailsSettingsTab
+          onSavedNotification={(msg) => addToast('success', msg)}
+        />
+      )}
+
+      {/* COMPREHENSIVE EDIT TRANSACTION MODAL (EXPENSE, INCOME, ASSET, DEPOSIT, INVESTMENT) */}
+      {transactionToEdit && (
         <div className="fixed inset-0 z-50 overflow-y-auto">
           <div className="flex min-h-screen items-center justify-center p-4 text-center">
-            <div className="fixed inset-0 transition-opacity" aria-hidden="true" onClick={() => setInvestmentToEdit(null)}>
-              <div className="absolute inset-0 bg-gray-600 opacity-60"></div>
+            <div className="fixed inset-0 transition-opacity" aria-hidden="true" onClick={() => !isUpdating && setTransactionToEdit(null)}>
+              <div className="absolute inset-0 bg-gray-900 opacity-60"></div>
             </div>
 
-            <div className="relative z-10 w-full max-w-lg transform overflow-hidden rounded-xl bg-white text-left shadow-2xl transition-all">
-              <div className="bg-gradient-to-r from-purple-800 to-indigo-800 px-6 py-4 flex items-center justify-between text-white">
-                <div className="flex items-center space-x-2">
-                  <Pencil className="h-5 w-5" />
-                  <h3 className="text-lg font-bold">Edit Partner Investment</h3>
+            <div className="relative z-10 w-full max-w-xl transform overflow-hidden rounded-2xl bg-white text-left shadow-2xl transition-all border border-gray-100">
+              {/* Dynamic Header */}
+              <div className={`px-6 py-4 flex items-center justify-between text-white ${
+                editTxData.type === 'Income'
+                  ? 'bg-gradient-to-r from-emerald-700 via-teal-700 to-green-800'
+                  : editTxData.type === 'Asset'
+                  ? 'bg-gradient-to-r from-indigo-700 via-blue-700 to-indigo-900'
+                  : editTxData.type === 'Deposit'
+                  ? 'bg-gradient-to-r from-teal-700 via-cyan-800 to-teal-900'
+                  : editTxData.type === 'Investment'
+                  ? 'bg-gradient-to-r from-purple-800 via-indigo-800 to-purple-950'
+                  : 'bg-gradient-to-r from-rose-700 via-red-700 to-rose-900'
+              }`}>
+                <div className="flex items-center space-x-2.5">
+                  <div className="p-2 bg-white/15 rounded-lg backdrop-blur-xs">
+                    {editTxData.type === 'Income' ? (
+                      <TrendingUp className="h-5 w-5 text-white" />
+                    ) : editTxData.type === 'Asset' ? (
+                      <Package className="h-5 w-5 text-white" />
+                    ) : editTxData.type === 'Deposit' ? (
+                      <ShieldCheck className="h-5 w-5 text-white" />
+                    ) : editTxData.type === 'Investment' ? (
+                      <Users className="h-5 w-5 text-white" />
+                    ) : (
+                      <TrendingDown className="h-5 w-5 text-white" />
+                    )}
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-bold tracking-tight">
+                      {editTxData.type === 'Income'
+                        ? 'Edit Income Record'
+                        : editTxData.type === 'Asset'
+                        ? 'Edit Capital Asset'
+                        : editTxData.type === 'Deposit'
+                        ? 'Edit Security Deposit'
+                        : editTxData.type === 'Investment'
+                        ? 'Edit Partner Investment'
+                        : 'Edit Operating Expense'}
+                    </h3>
+                    <p className="text-xs text-white/80">
+                      Update details, amount, category, or payment instrument
+                    </p>
+                  </div>
                 </div>
-                <button onClick={() => setInvestmentToEdit(null)} className="text-white hover:text-purple-200">
+                <button
+                  onClick={() => !isUpdating && setTransactionToEdit(null)}
+                  className="text-white/80 hover:text-white p-1 rounded-md hover:bg-white/10 transition-colors"
+                >
                   <X className="h-5 w-5" />
                 </button>
               </div>
 
-              <form onSubmit={handleEditInvestmentSubmit} className="p-6 space-y-4">
-                <div>
-                  <label className="block text-xs font-semibold text-gray-700">Partner Name *</label>
-                  <input
-                    type="text"
-                    required
-                    list="edit-partner-name-suggestions"
-                    value={editFormData.partnerName}
-                    onChange={e => setEditFormData({ ...editFormData, partnerName: e.target.value })}
-                    className="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 shadow-sm focus:border-purple-500 focus:ring-purple-500 sm:text-sm border"
-                  />
-                  <datalist id="edit-partner-name-suggestions">
-                    {knownPartnerNames.map(name => (
-                      <option key={name} value={name} />
-                    ))}
-                  </datalist>
-                </div>
+              <form onSubmit={handleEditTransactionSubmit} className="p-6 space-y-4">
+                {/* Type Reclassification Selector (allows quick re-sorting between Expense & Income) */}
+                {(editTxData.type === 'Expense' || editTxData.type === 'Income') && (
+                  <div className="bg-gray-50 p-2 rounded-lg flex items-center justify-between border border-gray-200">
+                    <span className="text-xs font-semibold text-gray-600 px-2">Classification:</span>
+                    <div className="flex items-center space-x-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditTxData(prev => ({
+                            ...prev,
+                            type: 'Expense',
+                            category: EXPENSE_CATEGORIES.includes(prev.category) ? prev.category : EXPENSE_CATEGORIES[0]
+                          }));
+                        }}
+                        className={`px-3 py-1 rounded text-xs font-bold transition-all ${
+                          editTxData.type === 'Expense'
+                            ? 'bg-red-600 text-white shadow-xs'
+                            : 'text-gray-600 hover:text-gray-900 hover:bg-gray-200/60'
+                        }`}
+                      >
+                        Operating Expense
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditTxData(prev => ({
+                            ...prev,
+                            type: 'Income',
+                            category: INCOME_CATEGORIES.includes(prev.category) ? prev.category : INCOME_CATEGORIES[0]
+                          }));
+                        }}
+                        className={`px-3 py-1 rounded text-xs font-bold transition-all ${
+                          editTxData.type === 'Income'
+                            ? 'bg-emerald-600 text-white shadow-xs'
+                            : 'text-gray-600 hover:text-gray-900 hover:bg-gray-200/60'
+                        }`}
+                      >
+                        Income Record
+                      </button>
+                    </div>
+                  </div>
+                )}
 
+                {/* Investment Partner Name */}
+                {editTxData.type === 'Investment' && (
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700">Contributing Partner *</label>
+                    <input
+                      type="text"
+                      required
+                      list="edit-partner-name-suggestions"
+                      value={editTxData.partnerName}
+                      onChange={e => setEditTxData({ ...editTxData, partnerName: e.target.value })}
+                      placeholder="e.g. John Doe, Sarah Jenkins"
+                      className="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 shadow-sm focus:border-purple-500 focus:ring-purple-500 sm:text-sm border"
+                    />
+                    <datalist id="edit-partner-name-suggestions">
+                      {knownPartnerNames.map(name => (
+                        <option key={name} value={name} />
+                      ))}
+                    </datalist>
+                  </div>
+                )}
+
+                {/* Capital Asset Specific Fields */}
+                {editTxData.type === 'Asset' && (
+                  <div className="space-y-3 p-3 bg-indigo-50/60 rounded-xl border border-indigo-100">
+                    <div>
+                      <label className="block text-xs font-semibold text-indigo-950">Asset / Equipment Name *</label>
+                      <input
+                        type="text"
+                        required
+                        value={editTxData.assetName}
+                        onChange={e => setEditTxData({ ...editTxData, assetName: e.target.value })}
+                        placeholder="e.g. Montessori Sensory Wall, Classroom Ergonomic Desk Set"
+                        className="mt-1 block w-full rounded-md border-gray-300 py-1.5 px-3 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border bg-white"
+                      />
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div>
+                        <label className="block text-xs font-semibold text-indigo-950">Location / Room</label>
+                        <input
+                          type="text"
+                          value={editTxData.locationOrRoom}
+                          onChange={e => setEditTxData({ ...editTxData, locationOrRoom: e.target.value })}
+                          className="mt-1 block w-full rounded-md border-gray-300 py-1.5 px-3 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border bg-white"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-indigo-950">Useful Life (Years)</label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="50"
+                          value={editTxData.usefulLifeYears}
+                          onChange={e => setEditTxData({ ...editTxData, usefulLifeYears: e.target.value })}
+                          className="mt-1 block w-full rounded-md border-gray-300 py-1.5 px-3 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border bg-white"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-indigo-950">Condition</label>
+                        <select
+                          value={editTxData.condition}
+                          onChange={e => setEditTxData({ ...editTxData, condition: e.target.value })}
+                          className="mt-1 block w-full rounded-md border-gray-300 py-1.5 px-3 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border bg-white"
+                        >
+                          <option value="Brand New">Brand New</option>
+                          <option value="Good">Good</option>
+                          <option value="Refurbished">Refurbished</option>
+                          <option value="Fair">Fair</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-indigo-950">Serial / Asset Tag #</label>
+                      <input
+                        type="text"
+                        value={editTxData.serialNumber}
+                        onChange={e => setEditTxData({ ...editTxData, serialNumber: e.target.value })}
+                        placeholder="e.g. SN-2026-LBD-094"
+                        className="mt-1 block w-full rounded-md border-gray-300 py-1.5 px-3 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border bg-white font-mono"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* Security Deposit Specific Fields */}
+                {editTxData.type === 'Deposit' && (
+                  <div className="space-y-3 p-3 bg-teal-50/60 rounded-xl border border-teal-100">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-semibold text-teal-950">Landlord / Payee Authority *</label>
+                        <input
+                          type="text"
+                          required
+                          value={editTxData.payeeName}
+                          onChange={e => setEditTxData({ ...editTxData, payeeName: e.target.value })}
+                          placeholder="e.g. Landlord Name, KSEB, Water Authority"
+                          className="mt-1 block w-full rounded-md border-gray-300 py-1.5 px-3 shadow-sm focus:border-teal-500 focus:ring-teal-500 sm:text-sm border bg-white"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-teal-950">Premises / Meter / Consumer Account</label>
+                        <input
+                          type="text"
+                          value={editTxData.premisesOrAccount}
+                          onChange={e => setEditTxData({ ...editTxData, premisesOrAccount: e.target.value })}
+                          placeholder="e.g. Main Centre Facility, Meter #1142"
+                          className="mt-1 block w-full rounded-md border-gray-300 py-1.5 px-3 shadow-sm focus:border-teal-500 focus:ring-teal-500 sm:text-sm border bg-white"
+                        />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
+                      <div>
+                        <label className="block text-xs font-semibold text-teal-950">Lease Reference / Agreement #</label>
+                        <input
+                          type="text"
+                          value={editTxData.referenceNumber}
+                          onChange={e => setEditTxData({ ...editTxData, referenceNumber: e.target.value })}
+                          placeholder="e.g. AGR-2026-004"
+                          className="mt-1 block w-full rounded-md border-gray-300 py-1.5 px-3 shadow-sm focus:border-teal-500 focus:ring-teal-500 sm:text-sm border bg-white font-mono"
+                        />
+                      </div>
+                      <div className="pt-4 flex items-center">
+                        <label className="inline-flex items-center cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={editTxData.refundable}
+                            onChange={e => setEditTxData({ ...editTxData, refundable: e.target.checked })}
+                            className="rounded border-gray-300 text-teal-600 focus:ring-teal-500 h-4 w-4"
+                          />
+                          <span className="ml-2 text-xs font-medium text-gray-700">100% Refundable on vacating</span>
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Core Row: Date & Amount */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-xs font-semibold text-gray-700">Date *</label>
+                    <label className="block text-xs font-semibold text-gray-700">Transaction Date *</label>
                     <input
                       type="date"
                       required
-                      value={editFormData.date}
-                      onChange={e => setEditFormData({ ...editFormData, date: e.target.value })}
-                      className="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 shadow-sm focus:border-purple-500 focus:ring-purple-500 sm:text-sm border"
+                      value={editTxData.date}
+                      onChange={e => setEditTxData({ ...editTxData, date: e.target.value })}
+                      className="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border"
                     />
                   </div>
 
                   <div>
-                    <label className="block text-xs font-semibold text-gray-700">Investment Amount (₹) *</label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      min="1"
-                      required
-                      value={editFormData.amount}
-                      onChange={e => setEditFormData({ ...editFormData, amount: e.target.value })}
-                      className="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 shadow-sm focus:border-purple-500 focus:ring-purple-500 sm:text-sm border"
-                    />
+                    <label className="block text-xs font-semibold text-gray-700">
+                      Amount (₹) *
+                    </label>
+                    <div className="relative mt-1 rounded-md shadow-sm">
+                      <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+                        <span className="text-gray-500 sm:text-sm">₹</span>
+                      </div>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0.01"
+                        required
+                        value={editTxData.amount}
+                        onChange={e => setEditTxData({ ...editTxData, amount: e.target.value })}
+                        placeholder="0.00"
+                        className="block w-full rounded-md border-gray-300 pl-7 pr-3 py-2 focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border"
+                      />
+                    </div>
                   </div>
                 </div>
 
+                {/* Category & Payment Mode */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700">
+                      {editTxData.type === 'Asset'
+                        ? 'Asset Category'
+                        : editTxData.type === 'Deposit'
+                        ? 'Deposit Category'
+                        : editTxData.type === 'Investment'
+                        ? 'Investment Purpose'
+                        : editTxData.type === 'Income'
+                        ? 'Income Category'
+                        : 'Expense Category'} *
+                    </label>
+                    <select
+                      value={editTxData.category}
+                      onChange={e => setEditTxData({ ...editTxData, category: e.target.value })}
+                      className="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border"
+                    >
+                      {editTxData.type === 'Income'
+                        ? INCOME_CATEGORIES.map(cat => (
+                            <option key={cat} value={cat}>{cat}</option>
+                          ))
+                        : editTxData.type === 'Asset'
+                        ? ASSET_CATEGORIES.map(cat => (
+                            <option key={cat} value={cat}>{cat}</option>
+                          ))
+                        : editTxData.type === 'Deposit'
+                        ? SECURITY_DEPOSIT_CATEGORIES.map(cat => (
+                            <option key={cat} value={cat}>{cat}</option>
+                          ))
+                        : editTxData.type === 'Investment'
+                        ? PARTNER_INVESTMENT_CATEGORIES.map(cat => (
+                            <option key={cat} value={cat}>{cat}</option>
+                          ))
+                        : EXPENSE_CATEGORIES.map(cat => (
+                            <option key={cat} value={cat}>{cat}</option>
+                          ))}
+                    </select>
+                  </div>
+
                   <div>
                     <label className="block text-xs font-semibold text-gray-700">Payment Mode *</label>
                     <select
-                      value={editFormData.paymentMode}
-                      onChange={e => setEditFormData({ ...editFormData, paymentMode: e.target.value })}
-                      className="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 shadow-sm focus:border-purple-500 focus:ring-purple-500 sm:text-sm border"
+                      value={editTxData.paymentMode}
+                      onChange={e => setEditTxData({ ...editTxData, paymentMode: e.target.value })}
+                      className="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border"
                     >
                       {PAYMENT_MODES.map(mode => (
                         <option key={mode} value={mode}>{mode}</option>
                       ))}
                     </select>
                   </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold text-gray-700">Investment Category</label>
-                    <select
-                      value={editFormData.category}
-                      onChange={e => setEditFormData({ ...editFormData, category: e.target.value })}
-                      className="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 shadow-sm focus:border-purple-500 focus:ring-purple-500 sm:text-sm border"
-                    >
-                      {PARTNER_INVESTMENT_CATEGORIES.map(cat => (
-                        <option key={cat} value={cat}>{cat}</option>
-                      ))}
-                    </select>
-                  </div>
                 </div>
 
+                {/* Description / Reference / Notes */}
                 <div>
-                  <label className="block text-xs font-semibold text-gray-700">Notes / Reference / Cheque No.</label>
-                  <input
-                    type="text"
-                    value={editFormData.description}
-                    onChange={e => setEditFormData({ ...editFormData, description: e.target.value })}
-                    className="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 shadow-sm focus:border-purple-500 focus:ring-purple-500 sm:text-sm border"
+                  <label className="block text-xs font-semibold text-gray-700">
+                    Description / Notes / Reference
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={editTxData.description}
+                    onChange={e => setEditTxData({ ...editTxData, description: e.target.value })}
+                    placeholder="e.g. Monthly classroom supplies from vendor, Cheque #104928, Bank Ref..."
+                    className="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border"
                   />
                 </div>
 
-                <div className="flex items-center justify-end space-x-3 pt-4 border-t border-gray-200">
+                {/* Modal Action Buttons */}
+                <div className="flex items-center justify-between pt-4 border-t border-gray-200">
                   <button
                     type="button"
-                    onClick={() => setInvestmentToEdit(null)}
-                    className="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50"
+                    onClick={() => {
+                      const target = transactionToEdit;
+                      setTransactionToEdit(null);
+                      if (target) setTransactionToDelete(target);
+                    }}
+                    className="inline-flex items-center text-xs text-red-600 hover:text-red-800 font-medium hover:underline"
                   >
-                    Cancel
+                    <Trash2 className="h-3.5 w-3.5 mr-1" />
+                    Delete this record
                   </button>
-                  <button
-                    type="submit"
-                    disabled={isUpdating}
-                    className="px-5 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500 disabled:opacity-50"
-                  >
-                    {isUpdating ? 'Saving...' : 'Update Investment'}
-                  </button>
+
+                  <div className="flex items-center space-x-3">
+                    <button
+                      type="button"
+                      disabled={isUpdating}
+                      onClick={() => setTransactionToEdit(null)}
+                      className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isUpdating}
+                      className={`px-5 py-2 border border-transparent rounded-lg shadow-sm text-sm font-semibold text-white focus:outline-none focus:ring-2 disabled:opacity-50 transition-colors ${
+                        editTxData.type === 'Income'
+                          ? 'bg-emerald-600 hover:bg-emerald-700 focus:ring-emerald-500'
+                          : editTxData.type === 'Asset'
+                          ? 'bg-indigo-600 hover:bg-indigo-700 focus:ring-indigo-500'
+                          : editTxData.type === 'Deposit'
+                          ? 'bg-teal-700 hover:bg-teal-800 focus:ring-teal-600'
+                          : editTxData.type === 'Investment'
+                          ? 'bg-purple-600 hover:bg-purple-700 focus:ring-purple-500'
+                          : 'bg-rose-600 hover:bg-rose-700 focus:ring-rose-500'
+                      }`}
+                    >
+                      {isUpdating ? 'Saving Changes...' : `Update ${editTxData.type}`}
+                    </button>
+                  </div>
                 </div>
               </form>
             </div>

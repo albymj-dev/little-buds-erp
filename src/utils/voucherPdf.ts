@@ -18,12 +18,12 @@ export interface VoucherSettings {
 export const defaultVoucherSettings: VoucherSettings = {
   centreName: 'Little Buds Child Care Centre',
   subName: 'Child Care & Early Childhood Development Centre',
-  address: 'Plot No. 42, Green Avenue, Early Childhood Campus, City - 560001',
-  contactInfo: 'Phone: +91 98765 43210 | Email: accounts@littlebuds.in',
+  address: '',
+  contactInfo: '',
   accentColor: '#4f46e5',
-  regNumber: 'Reg. No: LBDC/2023/8842',
-  panNumber: 'PAN: AABCL8842K',
-  bankDetails: 'HDFC Bank | A/C: 50200012345678 | IFSC: HDFC0001234'
+  regNumber: '',
+  panNumber: '',
+  bankDetails: ''
 };
 
 const VOUCHER_SETTINGS_KEY = 'littlebuds_voucher_settings_v2';

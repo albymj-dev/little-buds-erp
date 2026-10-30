@@ -5,13 +5,23 @@ import {
   Receipt, AlertCircle, CheckCircle, Clock, Download, Printer, Trash2, 
   Settings, Eye, Landmark, Banknote, X, Check, Timer, Sparkles, 
   StickyNote, Search, Filter, MapPin, Calendar, HelpCircle, Layers,
-  ChevronDown, ArrowRight
+  ChevronDown, ArrowRight, Pencil, MessageSquare
 } from 'lucide-react';
 import { format } from 'date-fns';
+import { formatDate } from '../utils/dateUtils';
 import DeleteConfirmModal from './DeleteConfirmModal';
 import { ToastContainer, ToastMessage } from './Toast';
 import InvoicePreviewModal from './InvoicePreviewModal';
-import { InvoiceSettings, defaultInvoiceSettings, generateInvoicePdf, printInvoiceDocument } from '../utils/invoicePdf';
+import { InvoiceEditModal } from './InvoiceEditModal';
+import { 
+  InvoiceSettings, 
+  defaultInvoiceSettings, 
+  generateInvoicePdf, 
+  printInvoiceDocument,
+  openInvoicePrintWindow,
+  normalizeWhatsAppNumber,
+  formatWhatsAppInvoiceMessage
+} from '../utils/invoicePdf';
 
 const FeeManagement = () => {
   const [fees, setFees] = useState<Fee[]>([]);
@@ -21,6 +31,7 @@ const FeeManagement = () => {
   const [showSettings, setShowSettings] = useState(false);
   const [feeToDelete, setFeeToDelete] = useState<Fee | null>(null);
   const [selectedFeeForPreview, setSelectedFeeForPreview] = useState<Fee | null>(null);
+  const [editingFee, setEditingFee] = useState<Fee | null>(null);
   const [previewInitialAction, setPreviewInitialAction] = useState<'preview' | 'print'>('preview');
   const [isDeleting, setIsDeleting] = useState(false);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
@@ -180,6 +191,11 @@ const FeeManagement = () => {
     const feePayload: Omit<Fee, 'id'> = {
       studentId: student.id!,
       studentName: student.name,
+      guardianName: student.guardianName,
+      guardianContact: student.guardianContact || student.emergencyContact,
+      address: student.address,
+      classOrAge: student.age ? `${student.age} Years` : student.developmentalFocus,
+      parentName: student.guardianName,
       type: finalType,
       customTypeName,
       billingBasis,
@@ -280,14 +296,11 @@ const FeeManagement = () => {
     }
   };
 
-  const printInvoice = async (fee: Fee) => {
+  const printInvoice = (fee: Fee) => {
     try {
       const student = students.find(s => s.id === fee.studentId || s.name === fee.studentName);
-      addToast('info', `Opening print preview for ${fee.studentName}...`);
-      const success = await printInvoiceDocument(fee, invoiceSettings, student);
-      if (!success) {
-        setSelectedFeeForPreview(fee);
-      }
+      addToast('info', `Opening print tab and dialogue for ${fee.studentName}...`);
+      openInvoicePrintWindow(fee, invoiceSettings, student);
     } catch (err) {
       console.error('Print invoice failed, opening preview modal:', err);
       setSelectedFeeForPreview(fee);
@@ -297,6 +310,63 @@ const FeeManagement = () => {
   const previewInvoice = (fee: Fee) => {
     setPreviewInitialAction('preview');
     setSelectedFeeForPreview(fee);
+  };
+
+  const sendWhatsAppInvoice = (fee: Fee) => {
+    const student = students.find(s => s.id === fee.studentId || s.name === fee.studentName);
+    const rawPhone = fee.guardianContact || student?.guardianContact || student?.emergencyContact || '';
+    const cleanPhone = normalizeWhatsAppNumber(rawPhone);
+
+    if (!cleanPhone) {
+      setSelectedFeeForPreview(fee);
+      addToast('info', 'Please enter or confirm the parent WhatsApp number to send.');
+      return;
+    }
+
+    const message = formatWhatsAppInvoiceMessage(fee, student);
+    const encoded = encodeURIComponent(message);
+    const waUrl = `https://wa.me/${cleanPhone}?text=${encoded}`;
+
+    // 1. Open WhatsApp IMMEDIATELY within synchronous click gesture (prevents popup blocking)
+    let opened = false;
+    try {
+      const waWin = window.open(waUrl, '_blank', 'noopener,noreferrer');
+      if (waWin && !waWin.closed) {
+        waWin.focus();
+        opened = true;
+      }
+    } catch (e) {
+      console.warn('Direct window.open caught:', e);
+    }
+
+    if (!opened) {
+      try {
+        const link = document.createElement('a');
+        link.href = waUrl;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        opened = true;
+      } catch (err) {
+        console.warn('Link click fallback:', err);
+      }
+    }
+
+    addToast('success', `WhatsApp opened for ${fee.studentName} (+${cleanPhone})! Generating PDF invoice...`);
+
+    // 2. Generate and download PDF invoice in parallel
+    const invNum = fee.invoiceNumber || (fee.id ? `INV-${fee.id.slice(0, 8).toUpperCase()}` : 'REC');
+    const fileName = `Invoice_${fee.studentName.replace(/\s+/g, '_')}_${invNum}.pdf`;
+
+    generateInvoicePdf(fee, invoiceSettings, student)
+      .then(doc => {
+        doc.save(fileName);
+      })
+      .catch(err => {
+        console.warn('PDF download error:', err);
+      });
   };
 
   return (
@@ -350,11 +420,11 @@ const FeeManagement = () => {
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700">UPI ID for Payments</label>
-              <input type="text" placeholder="e.g. littlebuds@upi" value={invoiceSettings.upiId || ''} onChange={e => setInvoiceSettings({...invoiceSettings, upiId: e.target.value})} className="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border" />
+              <input type="text" placeholder="e.g. centre@upi (Optional)" value={invoiceSettings.upiId || ''} onChange={e => setInvoiceSettings({...invoiceSettings, upiId: e.target.value})} className="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border" />
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700">Bank Account Details</label>
-              <input type="text" placeholder="e.g. HDFC Bank | A/C: 502000... | IFSC: HDFC..." value={invoiceSettings.bankDetails || ''} onChange={e => setInvoiceSettings({...invoiceSettings, bankDetails: e.target.value})} className="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border" />
+              <input type="text" placeholder="e.g. Bank Name | A/C No. | IFSC (Leave blank if none)" value={invoiceSettings.bankDetails || ''} onChange={e => setInvoiceSettings({...invoiceSettings, bankDetails: e.target.value})} className="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border" />
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700">Accent Color</label>
@@ -1093,7 +1163,7 @@ const FeeManagement = () => {
                           </td>
 
                           <td className="whitespace-nowrap px-3 py-4 text-sm text-stone-500">
-                            {fee.dueDate}
+                            {formatDate(fee.dueDate)}
                           </td>
 
                           <td className="whitespace-nowrap px-3 py-4 text-sm text-stone-500">
@@ -1102,6 +1172,14 @@ const FeeManagement = () => {
 
                           <td className="relative whitespace-nowrap py-4 pl-3 pr-4 text-right text-sm font-medium sm:pr-6">
                             <div className="flex items-center justify-end space-x-2">
+                              <button
+                                onClick={() => setEditingFee(fee)}
+                                className="inline-flex items-center px-2 py-1 text-xs font-semibold rounded-md text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 transition-colors"
+                                title="Edit Invoice Data & Items"
+                              >
+                                <Pencil className="w-3.5 h-3.5 mr-1 text-amber-600" />
+                                Edit
+                              </button>
                               <button
                                 onClick={() => previewInvoice(fee)}
                                 className="inline-flex items-center px-2.5 py-1 text-xs font-semibold rounded-md text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 transition-colors"
@@ -1137,14 +1215,14 @@ const FeeManagement = () => {
                                   Mark Paid
                                 </button>
                               )}
-                              <a 
-                                href={`https://wa.me/${students.find(s => s.name === fee.studentName)?.guardianContact?.replace(/\D/g, '') || ''}?text=${encodeURIComponent(`Reminder: Fee of ₹${fee.amount} (${fee.customTypeName || fee.type}) is ${fee.status.toLowerCase()} for ${fee.studentName}. Due date: ${fee.dueDate}.${fee.notes ? ` Notes: ${fee.notes}` : ''}`)}`} 
-                                target="_blank" 
-                                rel="noreferrer" 
-                                className="inline-flex items-center px-2 py-1 text-xs font-medium rounded-md text-emerald-800 bg-emerald-100/70 hover:bg-emerald-200 transition-colors"
+                              <button 
+                                onClick={() => sendWhatsAppInvoice(fee)} 
+                                className="inline-flex items-center px-2 py-1 text-xs font-semibold rounded-md text-emerald-800 bg-emerald-100 hover:bg-emerald-200 transition-colors"
+                                title="Send Invoice PDF via WhatsApp to Billed Number"
                               >
-                                Remind
-                              </a>
+                                <MessageSquare className="w-3.5 h-3.5 mr-1 text-emerald-700" />
+                                WhatsApp
+                              </button>
                               <button 
                                 onClick={() => setFeeToDelete(fee)} 
                                 className="p-1.5 text-red-500 hover:text-red-700 hover:bg-red-50 rounded-md transition-colors" 
@@ -1174,9 +1252,28 @@ const FeeManagement = () => {
           isOpen={!!selectedFeeForPreview}
           initialAction={previewInitialAction}
           onClose={() => setSelectedFeeForPreview(null)}
+          onFeeUpdated={(updatedFee) => {
+            setFees(prev => prev.map(f => f.id === updatedFee.id ? updatedFee : f));
+            setSelectedFeeForPreview(updatedFee);
+          }}
           onMarkPaid={(feeId, amount) => {
             handleUpdateStatus(feeId, 'Paid', amount);
             setSelectedFeeForPreview(prev => prev ? { ...prev, status: 'Paid', amountPaid: amount } : null);
+          }}
+        />
+      )}
+
+      {/* Invoice Edit Modal */}
+      {editingFee && (
+        <InvoiceEditModal
+          fee={editingFee}
+          student={students.find(s => s.id === editingFee.studentId || s.name === editingFee.studentName)}
+          isOpen={!!editingFee}
+          onClose={() => setEditingFee(null)}
+          onSaved={(updatedFee) => {
+            setFees(prev => prev.map(f => f.id === updatedFee.id ? updatedFee : f));
+            setEditingFee(null);
+            addToast('success', `Invoice for ${updatedFee.studentName} updated successfully.`);
           }}
         />
       )}

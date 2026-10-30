@@ -119,6 +119,16 @@ export const updateFeeStatus = async (id: string, status: Fee['status'], amountP
   await logActivity('Updated Fee Status', `Updated fee ID ${id} to status: ${status}${paymentMode ? ` [Mode: ${paymentMode}]` : ''}`);
 };
 
+export const updateFee = async (id: string, data: Partial<Fee>): Promise<void> => {
+  const rawData: any = {
+    ...data,
+    updatedAt: new Date().toISOString()
+  };
+  delete rawData.id;
+  await updateDoc(doc(db, 'fees', id), removeUndefinedFields(rawData));
+  await logActivity('Updated Invoice / Fee', `Edited invoice for ${data.studentName || id} (Amount: ₹${data.amount ?? 'N/A'})`);
+};
+
 // Attendance
 export const getAttendanceByMonth = async (monthStart: string, monthEnd: string): Promise<Attendance[]> => {
   const q = query(

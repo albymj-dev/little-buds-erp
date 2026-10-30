@@ -7,7 +7,7 @@ export const DEFAULT_CHART_OF_ACCOUNTS: Omit<ChartOfAccountItem, 'id'>[] = [
   // 1000 - ASSETS
   {
     code: '1010',
-    name: 'Operating Bank Account (Federal Bank / Current)',
+    name: 'Operating Bank Account (Primary Bank Account)',
     type: 'Asset',
     subtype: 'Cash & Bank',
     normalBalance: 'Debit',

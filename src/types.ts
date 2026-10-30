@@ -21,8 +21,10 @@ export interface Student {
   id?: string;
   name: string;
   dob: string;
+  age?: number;
   guardianName: string;
   guardianContact: string;
+  emergencyContact?: string;
   admissionDate: string;
   // Child care profile: developmental focus area / program
   primaryDiagnosis?: string; // Kept for backwards compatibility
@@ -50,22 +52,70 @@ export type FeeType =
   | 'Custom'
   | string;
 
+export interface InvoiceItem {
+  id?: string;
+  description: string;
+  quantity: number;
+  rate: number;
+  amount: number;
+}
+
+export interface BusinessFinancialDetails {
+  accountHolderName: string;
+  bankName: string;
+  accountNumber: string;
+  ifscCode: string;
+  branchName: string;
+  accountType: 'Current' | 'Savings' | 'Overdraft' | 'Other' | '';
+  upiId: string;
+  qrCodeUrl?: string;
+  paymentNotes?: string;
+  updatedAt?: string;
+}
+
+export interface BusinessSettings {
+  centreName: string;
+  tagline: string;
+  subName?: string;
+  address: string;
+  phone: string;
+  email: string;
+  regNumber?: string;
+  financial: BusinessFinancialDetails;
+  terms?: string;
+  accentColor?: string;
+}
+
 export interface Fee {
   id?: string;
+  invoiceNumber?: string;
+  issueDate?: string; // YYYY-MM-DD
   studentId: string;
   studentName: string;
+  // Customer & child info overrides (fully editable)
+  guardianName?: string;
+  guardianContact?: string;
+  address?: string;
+  classOrAge?: string;
+  parentName?: string;
+  // Items and pricing
   type: FeeType;
   customTypeName?: string;
   billingBasis?: FeeBillingBasis;
   rate?: number;
   units?: number;
-  amount: number;
+  items?: InvoiceItem[];
+  subtotal?: number;
+  discount?: number;
+  amount: number; // Total amount / Grand Total
   amountPaid: number;
   dueDate: string;
   status: FeeStatus;
   paymentMode?: string;
   notes?: string;
+  terms?: string;
   createdAt?: string;
+  updatedAt?: string;
 }
 
 export type AttendanceStatus = 'Present' | 'Absent' | 'Late';
