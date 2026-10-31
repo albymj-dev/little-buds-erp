@@ -126,7 +126,14 @@ const StudentFormModal: React.FC<Props> = ({ student, onClose, onSave }) => {
                 <input type="text" name="name" required value={formData.name} onChange={handleChange} className="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm border py-2 px-3" />
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700">Date of Birth *</label>
+                <div className="flex justify-between items-center">
+                  <label className="block text-sm font-medium text-gray-700">Date of Birth *</label>
+                  {formData.dob && (
+                    <span className="text-[11px] font-semibold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded">
+                      {formData.dob.split('-').reverse().join('/')}
+                    </span>
+                  )}
+                </div>
                 <input type="date" name="dob" required value={formData.dob} onChange={handleChange} className="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm border py-2 px-3" />
               </div>
               
@@ -152,7 +159,14 @@ const StudentFormModal: React.FC<Props> = ({ student, onClose, onSave }) => {
               </div>
               
               <div>
-                <label className="block text-sm font-medium text-gray-700">Admission Date *</label>
+                <div className="flex justify-between items-center">
+                  <label className="block text-sm font-medium text-gray-700">Admission Date *</label>
+                  {formData.admissionDate && (
+                    <span className="text-[11px] font-semibold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded">
+                      {formData.admissionDate.split('-').reverse().join('/')}
+                    </span>
+                  )}
+                </div>
                 <input type="date" name="admissionDate" required value={formData.admissionDate} onChange={handleChange} className="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm border py-2 px-3" />
               </div>
               <div>

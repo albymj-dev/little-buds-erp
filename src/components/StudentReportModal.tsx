@@ -4,6 +4,7 @@ import { getAttendanceByStudent, getFees } from '../services/api';
 import { X, CheckCircle, Clock, AlertCircle } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { formatDate } from '../utils/dateUtils';
 
 interface Props {
   student: Student;
@@ -45,14 +46,14 @@ const StudentReportModal: React.FC<Props> = ({ student, onClose }) => {
     
     doc.setFontSize(12);
     doc.text(`Name: ${student.name}`, 14, 40);
-    doc.text(`DOB: ${student.dob}`, 14, 46);
+    doc.text(`DOB: ${formatDate(student.dob)}`, 14, 46);
     doc.text(`Guardian: ${student.guardianName} (${student.guardianContact})`, 14, 52);
     if (student.address) {
       doc.text(`Address: ${student.address}`, 14, 58);
-      doc.text(`Admission Date: ${student.admissionDate}`, 14, 64);
+      doc.text(`Admission Date: ${formatDate(student.admissionDate)}`, 14, 64);
       doc.text(`Developmental Focus: ${student.developmentalFocus || student.primaryDiagnosis || 'Early Childhood Learning'}`, 14, 70);
     } else {
-      doc.text(`Admission Date: ${student.admissionDate}`, 14, 58);
+      doc.text(`Admission Date: ${formatDate(student.admissionDate)}`, 14, 58);
       doc.text(`Developmental Focus: ${student.developmentalFocus || student.primaryDiagnosis || 'Early Childhood Learning'}`, 14, 64);
     }
     
@@ -64,7 +65,7 @@ const StudentReportModal: React.FC<Props> = ({ student, onClose }) => {
     autoTable(doc, {
       startY: yPos + 4,
       head: [['Type', 'Due Date', 'Status', 'Amount (Rs)', 'Paid (Rs)']],
-      body: fees.map(f => [f.type, f.dueDate, f.status, f.amount, f.amountPaid]),
+      body: fees.map(f => [f.type, formatDate(f.dueDate), f.status, f.amount, f.amountPaid]),
       theme: 'grid',
       headStyles: { fillColor: [79, 70, 229] }
     });
@@ -86,7 +87,7 @@ const StudentReportModal: React.FC<Props> = ({ student, onClose }) => {
       startY: yPos + 4,
       head: [['Date', 'Status', 'Program / Activity']],
       body: attendance.slice(0, 30).map(a => [
-        a.date,
+        formatDate(a.date),
         a.status,
         a.therapyTypes?.length ? a.therapyTypes.map(formatSessionName).join(', ') : formatSessionName(a.therapyType)
       ]),
@@ -135,8 +136,8 @@ const StudentReportModal: React.FC<Props> = ({ student, onClose }) => {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
                     <div><span className="text-gray-500">Guardian:</span> {student.guardianName}</div>
                     <div><span className="text-gray-500">Contact:</span> {student.guardianContact}</div>
-                    <div><span className="text-gray-500">DOB:</span> {student.dob}</div>
-                    <div><span className="text-gray-500">Admission:</span> {student.admissionDate}</div>
+                    <div><span className="text-gray-500">DOB:</span> {formatDate(student.dob)}</div>
+                    <div><span className="text-gray-500">Admission:</span> {formatDate(student.admissionDate)}</div>
                     <div><span className="text-gray-500">Developmental Focus:</span> {student.developmentalFocus || student.primaryDiagnosis || 'Early Childhood Learning'}</div>
                     {student.address && (
                       <div><span className="text-gray-500">Address:</span> {student.address}</div>
@@ -165,7 +166,7 @@ const StudentReportModal: React.FC<Props> = ({ student, onClose }) => {
                             {fees.map(f => (
                               <tr key={f.id}>
                                 <td className="px-3 py-2 text-sm text-gray-900">{f.type}</td>
-                                <td className="px-3 py-2 text-sm text-gray-500">{f.dueDate}</td>
+                                <td className="px-3 py-2 text-sm text-gray-600 font-medium">{formatDate(f.dueDate)}</td>
                                 <td className="px-3 py-2 text-sm text-gray-900">₹{f.amount}</td>
                                 <td className="px-3 py-2 text-sm">{getStatusBadge(f.status)}</td>
                               </tr>
@@ -192,7 +193,7 @@ const StudentReportModal: React.FC<Props> = ({ student, onClose }) => {
                           <tbody className="bg-white divide-y divide-gray-200">
                             {attendance.map(a => (
                               <tr key={a.id}>
-                                <td className="px-3 py-2 text-sm text-gray-900">{a.date}</td>
+                                <td className="px-3 py-2 text-sm text-gray-900 font-medium">{formatDate(a.date)}</td>
                                 <td className="px-3 py-2 text-sm">
                                   <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${a.status === 'Present' ? 'bg-green-100 text-green-800' : a.status === 'Absent' ? 'bg-red-100 text-red-800' : 'bg-yellow-100 text-yellow-800'}`}>
                                     {a.status}

@@ -33,6 +33,7 @@ import {
   exportMasterLedgerToExcel
 } from '../services/ledgerService';
 import { format, startOfMonth, endOfMonth, subMonths } from 'date-fns';
+import { formatDate } from '../utils/dateUtils';
 
 interface LedgerWiseReportViewProps {
   accounts: ChartOfAccountItem[];
@@ -565,7 +566,7 @@ export const LedgerWiseReportView: React.FC<LedgerWiseReportViewProps> = ({
                   ) : (
                     filteredEntries.map(entry => (
                       <tr key={entry.id} className="hover:bg-indigo-50/30 transition-colors">
-                        <td className="py-3 px-3.5 whitespace-nowrap font-mono text-gray-600">{entry.date}</td>
+                        <td className="py-3 px-3.5 whitespace-nowrap font-mono text-gray-700 font-medium">{formatDate(entry.date)}</td>
                         <td className="py-3 px-3 whitespace-nowrap">
                           <span className="font-mono text-[11px] font-bold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-200">
                             {entry.voucherNumber || 'TXN'}
@@ -919,7 +920,7 @@ export const LedgerWiseReportView: React.FC<LedgerWiseReportViewProps> = ({
                   </tr>
                   {singleReport.entries.map(e => (
                     <tr key={e.id}>
-                      <td className="border border-gray-300 p-1.5 font-mono">{e.date}</td>
+                      <td className="border border-gray-300 p-1.5 font-mono">{formatDate(e.date)}</td>
                       <td className="border border-gray-300 p-1.5 font-mono">{e.voucherNumber || '—'}</td>
                       <td className="border border-gray-300 p-1.5">{e.particulars}</td>
                       <td className="border border-gray-300 p-1.5">{e.counterAccountName || 'General'}</td>

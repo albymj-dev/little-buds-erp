@@ -134,8 +134,8 @@ export interface Attendance {
   createdAt?: string;
 }
 
-export type TransactionType = 'Income' | 'Expense' | 'Asset' | 'Investment' | 'Deposit';
-export type PurchaseType = 'Expense' | 'Asset' | 'Investment' | 'Deposit';
+export type TransactionType = 'Income' | 'Expense' | 'Asset' | 'Investment' | 'Deposit' | 'Transfer';
+export type PurchaseType = 'Expense' | 'Asset' | 'Investment' | 'Deposit' | 'Transfer';
 
 export interface AssetDetails {
   assetName: string;
@@ -159,18 +159,29 @@ export interface DepositDetails {
   notes?: string;
 }
 
+export interface TransferDetails {
+  transferType: 'CashToBank' | 'BankToCash';
+  fromAccount: string; // e.g. 'Cash in Hand (Account 1010)'
+  toAccount: string;   // e.g. 'Primary Bank Account (Account 1020)'
+  bankName?: string;
+  depositSlipNumber?: string;
+  depositedBy?: string;
+  notes?: string;
+}
+
 export interface FinanceTransaction {
   id?: string;
   date: string;
   type: TransactionType;
-  purchaseType?: PurchaseType; // Distinguishes between Operating Expense, Capital Asset purchase, Partner Investment, or Security Deposit
+  purchaseType?: PurchaseType; // Distinguishes between Operating Expense, Capital Asset purchase, Partner Investment, Security Deposit, or Cash to Bank Transfer
   category: string;
   amount: number;
   description: string;
   partnerName?: string; // Name of partner who invested
-  paymentMode?: string; // e.g. 'Bank Transfer', 'Cheque', 'UPI', 'Cash'
+  paymentMode?: string; // e.g. 'Bank Transfer', 'Cheque', 'UPI', 'Cash', 'Cash to Bank Deposit'
   assetDetails?: AssetDetails;
   depositDetails?: DepositDetails;
+  transferDetails?: TransferDetails;
   createdAt?: string;
 }
 

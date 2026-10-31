@@ -6,6 +6,7 @@ import StudentFormModal from './StudentFormModal';
 import StudentReportModal from './StudentReportModal';
 import DeleteConfirmModal from './DeleteConfirmModal';
 import { ToastContainer, ToastMessage } from './Toast';
+import { formatDate } from '../utils/dateUtils';
 
 const StudentsList = () => {
   const [students, setStudents] = useState<Student[]>([]);
@@ -150,7 +151,9 @@ const StudentsList = () => {
                             {student.developmentalFocus || student.primaryDiagnosis || 'Early Childhood Learning'}
                           </span>
                         </td>
-                        <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">{student.admissionDate}</td>
+                        <td className="whitespace-nowrap px-3 py-4 text-sm font-medium text-gray-700">
+                          {formatDate(student.admissionDate)}
+                        </td>
                         <td className="relative whitespace-nowrap py-4 pl-3 pr-4 text-right text-sm font-medium sm:pr-6 space-x-2 flex justify-end items-center">
                           <button
                             onClick={() => setReportStudent(student)}

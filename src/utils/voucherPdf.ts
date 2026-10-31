@@ -3,6 +3,7 @@ import autoTable from 'jspdf-autotable';
 import { FinanceTransaction } from '../types';
 import { format, parseISO } from 'date-fns';
 import { numberToWords } from './invoicePdf';
+import { formatDate } from './dateUtils';
 
 export interface VoucherSettings {
   centreName: string;
@@ -181,14 +182,7 @@ export function generatePrintableVoucherHtml(
   };
 
   const voucherNo = customDetails?.voucherNumber || getVoucherNumber(tx);
-  let voucherDate = customDetails?.voucherDate || tx.date;
-  try {
-    if (voucherDate && voucherDate.includes('-') && voucherDate.length === 10) {
-      voucherDate = format(parseISO(voucherDate), 'dd MMMM yyyy');
-    }
-  } catch {
-    // preserve voucherDate as is
-  }
+  const voucherDate = formatDate(customDetails?.voucherDate || tx.date);
 
   const defaultAccount = getAccountHeadInfo(tx);
   const accountInfo = {
@@ -762,14 +756,7 @@ export async function generateVoucherPdf(
   const primaryRgb = hexToRgb(effectiveSettings.accentColor || '#4f46e5');
   const voucherNo = customDetails?.voucherNumber || getVoucherNumber(tx);
 
-  let formattedDate = customDetails?.voucherDate || tx.date;
-  try {
-    if (formattedDate && formattedDate.includes('-') && formattedDate.length === 10) {
-      formattedDate = format(parseISO(formattedDate), 'dd MMMM yyyy');
-    }
-  } catch {
-    // keep as is
-  }
+  const formattedDate = formatDate(customDetails?.voucherDate || tx.date);
 
   const defaultAccount = getAccountHeadInfo(tx);
   const accountInfo = {
