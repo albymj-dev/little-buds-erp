@@ -20,7 +20,7 @@ import {
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { ChartOfAccountItem, AccountType, AccountNormalBalance, FinanceTransaction, Fee } from '../types';
-import { addChartOfAccount, updateChartOfAccount, deleteChartOfAccount, calculateAccountLedgerBalances } from '../services/chartOfAccountsService';
+import { addChartOfAccount, updateChartOfAccount, deleteChartOfAccount, calculateAccountLedgerBalances, DEFAULT_CHART_OF_ACCOUNTS } from '../services/chartOfAccountsService';
 
 interface ChartOfAccountsViewProps {
   accounts: ChartOfAccountItem[];
@@ -55,6 +55,16 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // Fallback to all 32 default accounts if accounts prop is empty
+  const activeAccounts = useMemo(() => {
+    if (accounts && accounts.length > 0) return accounts;
+    return DEFAULT_CHART_OF_ACCOUNTS.map((acc, index) => ({
+      ...acc,
+      id: `default-${acc.code}-${index}`,
+      createdAt: '2025-01-01T00:00:00.000Z'
+    }));
+  }, [accounts]);
+
   // Form State for Add / Edit
   const [formData, setFormData] = useState({
     code: '',
@@ -73,8 +83,8 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
 
   // Calculate live balances for all accounts
   const accountBalances = useMemo(() => {
-    return calculateAccountLedgerBalances(accounts, transactions, fees, liquidStats);
-  }, [accounts, transactions, fees, liquidStats]);
+    return calculateAccountLedgerBalances(activeAccounts, transactions, fees, liquidStats);
+  }, [activeAccounts, transactions, fees, liquidStats]);
 
   // Account Type configuration map
   const typeConfig: Record<AccountType, { badge: string; border: string; bg: string; icon: any; defaultNormal: AccountNormalBalance }> = {
@@ -117,11 +127,11 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
 
   // Summary Metrics
   const summaryMetrics = useMemo(() => {
-    const assets = accounts.filter(a => a.type === 'Asset');
-    const liabilities = accounts.filter(a => a.type === 'Liability');
-    const equity = accounts.filter(a => a.type === 'Equity');
-    const revenues = accounts.filter(a => a.type === 'Revenue');
-    const expenses = accounts.filter(a => a.type === 'Expense');
+    const assets = activeAccounts.filter(a => a.type === 'Asset');
+    const liabilities = activeAccounts.filter(a => a.type === 'Liability');
+    const equity = activeAccounts.filter(a => a.type === 'Equity');
+    const revenues = activeAccounts.filter(a => a.type === 'Revenue');
+    const expenses = activeAccounts.filter(a => a.type === 'Expense');
 
     const totalAssetBalance = assets.reduce((sum, a) => {
       if (a.subtype === 'Contra-Asset') {
@@ -135,7 +145,7 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
     const totalEquityBalance = equity.reduce((sum, a) => sum + (accountBalances[a.code]?.balance || 0), 0);
 
     return {
-      totalAccounts: accounts.length,
+      totalAccounts: activeAccounts.length,
       assetCount: assets.length,
       totalAssetBalance,
       liabilityCount: liabilities.length,
@@ -146,11 +156,11 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
       expenseCount: expenses.length,
       totalExpenseBalance
     };
-  }, [accounts, accountBalances]);
+  }, [activeAccounts, accountBalances]);
 
   // Filtered accounts list
   const filteredAccounts = useMemo(() => {
-    return accounts
+    return activeAccounts
       .filter(a => {
         if (!showInactive && !a.isActive) return false;
         if (selectedType !== 'ALL' && a.type !== selectedType) return false;
@@ -166,7 +176,7 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
         return true;
       })
       .sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }));
-  }, [accounts, selectedType, searchQuery, showInactive]);
+  }, [activeAccounts, selectedType, searchQuery, showInactive]);
 
   const handleOpenAddModal = () => {
     setEditingAccount(null);
@@ -245,7 +255,7 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
         showToast(`Account ${formData.code} updated successfully.`);
       } else {
         // Check for duplicate code
-        if (accounts.some(a => a.code === formData.code.trim())) {
+        if (activeAccounts.some(a => a.code === formData.code.trim())) {
           showToast(`Account code ${formData.code} already exists.`);
           setIsSubmitting(false);
           return;

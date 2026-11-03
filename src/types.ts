@@ -134,8 +134,8 @@ export interface Attendance {
   createdAt?: string;
 }
 
-export type TransactionType = 'Income' | 'Expense' | 'Asset' | 'Investment' | 'Deposit' | 'Transfer';
-export type PurchaseType = 'Expense' | 'Asset' | 'Investment' | 'Deposit' | 'Transfer';
+export type TransactionType = 'Income' | 'Expense' | 'Asset' | 'Investment' | 'Deposit' | 'Transfer' | 'Salary' | 'Accrual' | 'AccrualSettlement' | 'Custom';
+export type PurchaseType = 'Expense' | 'Asset' | 'Investment' | 'Deposit' | 'Transfer' | 'Salary' | 'Accrual' | 'AccrualSettlement' | 'Custom';
 
 export interface AssetDetails {
   assetName: string;
@@ -169,11 +169,112 @@ export interface TransferDetails {
   notes?: string;
 }
 
+export interface SalaryDetails {
+  staffName: string;
+  designation?: string;
+  salaryMonth: string; // e.g. "October 2026" or "2026-10"
+  totalSalary: number; // Agreed/scheduled salary amount
+  amountPaid: number;  // Amount paid
+  balanceDue: number;  // Outstanding salary balance
+  advanceAmount?: number; // Advance paid if any
+  isPartial?: boolean;
+  notes?: string;
+}
+
+export interface StaffSalary {
+  id?: string;
+  staffName: string;
+  designation?: string;
+  salaryMonth: string; // e.g. "October 2026"
+  totalSalary: number; // Scheduled monthly salary
+  amountPaid: number;  // Amount paid so far
+  balanceDue: number;  // Outstanding salary payable
+  advanceAmount?: number; // Advance amount if paid more than scheduled
+  status: 'Paid' | 'Partially Paid' | 'Pending' | 'Advance';
+  paymentDate: string; // DD/MM/YYYY or YYYY-MM-DD
+  paymentMode: string; // 'Bank Transfer', 'Cash', 'UPI', 'Cheque'
+  description?: string;
+  ledgerAccountCode?: string; // Default '5010'
+  liabilityAccountCode?: string; // Default '2030'
+  transactionId?: string; // Linked FinanceTransaction ID
+  paymentHistory?: SalaryPaymentRecord[];
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface SalaryPaymentRecord {
+  id?: string;
+  salaryId?: string;
+  staffName: string;
+  salaryMonth: string;
+  amount: number;
+  paymentDate: string;
+  paymentMode: string;
+  referenceNumber?: string;
+  description?: string;
+  transactionId?: string;
+  createdAt?: string;
+}
+
+export interface AccrualDetails {
+  accrualId?: string;
+  vendorOrRecipient: string;
+  incurredDate?: string;
+  dueDate?: string;
+  isSettlement?: boolean;
+  originalAccrualAmount?: number;
+  remainingBalance?: number;
+  invoiceNumber?: string;
+}
+
+export interface AccruedExpense {
+  id?: string;
+  category: string; // Expense category (e.g. Rent, Utilities, Consumables, or custom)
+  vendorOrRecipient: string; // Landlord, vendor, service provider, consultant
+  amount: number; // Incurred amount
+  amountPaid: number; // Amount settled so far
+  balanceDue: number; // Remaining outstanding liability
+  status: 'Pending' | 'Partially Paid' | 'Settled';
+  incurredDate: string; // Date expense was incurred
+  dueDate: string; // Due date for payment
+  description?: string;
+  invoiceNumber?: string;
+  expenseAccountCode: string; // e.g. '5020' or custom
+  liabilityAccountCode: string; // e.g. '2010'
+  transactionId?: string; // Linked accrual transaction
+  settlementHistory?: AccrualSettlementRecord[];
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface AccrualSettlementRecord {
+  id?: string;
+  accrualId: string;
+  vendorOrRecipient: string;
+  category: string;
+  amount: number;
+  paymentDate: string;
+  paymentMode: string;
+  referenceNumber?: string;
+  description?: string;
+  transactionId?: string;
+  createdAt?: string;
+}
+
+export interface CustomCategory {
+  id?: string;
+  name: string;
+  type: 'Expense' | 'Income';
+  defaultLedgerCode?: string;
+  description?: string;
+  createdAt?: string;
+}
+
 export interface FinanceTransaction {
   id?: string;
   date: string;
   type: TransactionType;
-  purchaseType?: PurchaseType; // Distinguishes between Operating Expense, Capital Asset purchase, Partner Investment, Security Deposit, or Cash to Bank Transfer
+  purchaseType?: PurchaseType; // Distinguishes between Expense, Asset, Investment, Deposit, Transfer, Salary, Accrual, AccrualSettlement, or Custom
   category: string;
   amount: number;
   description: string;
@@ -182,6 +283,10 @@ export interface FinanceTransaction {
   assetDetails?: AssetDetails;
   depositDetails?: DepositDetails;
   transferDetails?: TransferDetails;
+  salaryDetails?: SalaryDetails;
+  accrualDetails?: AccrualDetails;
+  ledgerAccountCode?: string; // General ledger account code (e.g. '5010', '2010', custom)
+  contraAccountCode?: string; // Counter balancing account code
   createdAt?: string;
 }
 

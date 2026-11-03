@@ -57,6 +57,186 @@ const ASSET_CATEGORY_TO_CODE: Record<string, string> = {
 };
 
 /**
+ * Transaction Classification Helpers
+ * Standardized single source of truth across Ledgers, Reports, Balance Sheet, and P&L.
+ */
+
+export const isCashToBankTx = (t: FinanceTransaction): boolean => {
+  if (t.transferDetails?.transferType === 'CashToBank') return true;
+  if (t.transferDetails?.transferType === 'BankToCash') return false;
+
+  const cat = (t.category || '').trim().toLowerCase();
+  const desc = (t.description || '').trim().toLowerCase();
+  const mode = (t.paymentMode || '').trim().toLowerCase();
+
+  // Explicit security deposit categories must not match
+  if (cat.includes('security deposit') || cat.includes('rental deposit') || cat.includes('caution deposit')) {
+    return false;
+  }
+
+  // Matches all variations of Cash Deposit to Bank
+  if (
+    cat === 'cash deposit to bank' ||
+    cat === 'cash to bank transfer' ||
+    cat === 'cash to bank' ||
+    cat === 'cash deposit' ||
+    cat === 'deposit to bank' ||
+    cat === 'deposit in bank' ||
+    cat === 'deposit cash to bank' ||
+    cat === 'deposit cash in bank' ||
+    cat === 'deposit cash' ||
+    cat === 'cash in hand to bank' ||
+    (cat.includes('deposit') && (cat.includes('cash') || cat.includes('to bank') || cat.includes('bank')))
+  ) {
+    return true;
+  }
+
+  if (mode === 'cash to bank deposit' || mode === 'cash to bank') return true;
+  if (
+    desc.includes('cash in hand deposited to bank') ||
+    desc.includes('cash deposited to bank') ||
+    desc.includes('convert cash in hand to bank') ||
+    desc.includes('deposited to bank')
+  ) {
+    return true;
+  }
+
+  if (t.type === 'Transfer' || t.purchaseType === 'Transfer') {
+    if (t.transferDetails?.fromAccount?.toLowerCase().includes('cash') || t.transferDetails?.toAccount?.toLowerCase().includes('bank')) {
+      return true;
+    }
+    if (!cat.includes('withdraw') && !desc.includes('withdraw')) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+export const isBankToCashTx = (t: FinanceTransaction): boolean => {
+  if (t.transferDetails?.transferType === 'BankToCash') return true;
+  if (t.transferDetails?.transferType === 'CashToBank') return false;
+
+  const cat = (t.category || '').trim().toLowerCase();
+  const desc = (t.description || '').trim().toLowerCase();
+  const mode = (t.paymentMode || '').trim().toLowerCase();
+
+  if (
+    cat === 'cash withdrawal from bank' ||
+    cat === 'bank to cash withdrawal' ||
+    cat === 'bank withdrawal to cash' ||
+    cat === 'cash withdrawal' ||
+    cat === 'withdraw cash' ||
+    cat === 'withdrawal from bank' ||
+    cat === 'bank to cash' ||
+    cat === 'bank withdrawal' ||
+    cat === 'atm withdrawal' ||
+    cat === 'cash from bank' ||
+    cat.includes('withdraw') ||
+    cat.includes('bank to cash') ||
+    cat.includes('cash from bank')
+  ) {
+    return true;
+  }
+
+  if (mode === 'bank to cash withdrawal' || mode === 'bank to cash') return true;
+  if (
+    desc.includes('cash withdrawn from bank') ||
+    desc.includes('withdrawn from bank') ||
+    desc.includes('withdraw cash') ||
+    desc.includes('cash withdrawal')
+  ) {
+    return true;
+  }
+
+  if (t.type === 'Transfer' || t.purchaseType === 'Transfer') {
+    if (t.transferDetails?.fromAccount?.toLowerCase().includes('bank') || t.transferDetails?.toAccount?.toLowerCase().includes('cash')) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+export const isTransferTx = (t: FinanceTransaction): boolean => {
+  return t.type === 'Transfer' || 
+         t.purchaseType === 'Transfer' || 
+         isCashToBankTx(t) || 
+         isBankToCashTx(t);
+};
+
+export const isDepositTx = (t: FinanceTransaction): boolean => {
+  // CRITICAL: Cash in hand deposited to bank is an internal Contra Transfer between Bank and Cash,
+  // NOT a security deposit asset (Account 1300)!
+  if (isTransferTx(t) || isCashToBankTx(t) || isBankToCashTx(t)) return false;
+
+  const cat = (t.category || '').trim().toLowerCase();
+  const desc = (t.description || '').trim().toLowerCase();
+
+  // Prevent any cash to bank deposit from matching
+  if (cat.includes('cash') || cat.includes('to bank') || desc.includes('to bank')) {
+    return false;
+  }
+
+  return t.type === 'Deposit' || 
+         t.purchaseType === 'Deposit' || 
+         cat.includes('security deposit') ||
+         cat.includes('rental deposit') ||
+         cat.includes('utility deposit') ||
+         cat.includes('caution deposit') ||
+         cat.includes('lease deposit') ||
+         (!!t.depositDetails && !t.transferDetails);
+};
+
+export const isInvestmentTx = (t: FinanceTransaction): boolean => {
+  if (isTransferTx(t) || isDepositTx(t)) return false;
+  const cat = (t.category || '').trim().toLowerCase();
+  return t.type === 'Investment' || 
+         t.purchaseType === 'Investment' || 
+         cat.includes('partner capital') ||
+         cat.includes('partner investment') ||
+         !!t.partnerName;
+};
+
+export const isAssetTx = (t: FinanceTransaction): boolean => {
+  if (isTransferTx(t) || isDepositTx(t) || isInvestmentTx(t)) return false;
+  return t.type === 'Asset' || t.purchaseType === 'Asset' || !!t.assetDetails;
+};
+
+export const isExpenseTx = (t: FinanceTransaction): boolean => {
+  // CRITICAL: Cash withdrawal and Cash deposit contra transactions
+  // MUST NEVER be treated as operating expenses!
+  if (isTransferTx(t) || isCashToBankTx(t) || isBankToCashTx(t)) return false;
+  if (isDepositTx(t) || isInvestmentTx(t) || isAssetTx(t)) return false;
+
+  const cat = (t.category || '').trim().toLowerCase();
+  const desc = (t.description || '').trim().toLowerCase();
+
+  // Strict barrier: any transfer/contra/withdrawal keyword must never become an expense
+  if (
+    cat.includes('withdraw') ||
+    cat.includes('contra') ||
+    (cat.includes('deposit') && !cat.includes('security') && !cat.includes('rental') && !cat.includes('caution')) ||
+    desc.includes('withdrawn from bank') ||
+    desc.includes('deposited to bank')
+  ) {
+    return false;
+  }
+
+  if (t.purchaseType === 'AccrualSettlement') return false;
+
+  return t.type === 'Expense' || 
+         t.purchaseType === 'Expense' || 
+         t.purchaseType === 'Salary' || 
+         t.purchaseType === 'Accrual';
+};
+
+export const isIncomeTx = (t: FinanceTransaction): boolean => {
+  if (isTransferTx(t) || isDepositTx(t) || isInvestmentTx(t) || isAssetTx(t) || isExpenseTx(t)) return false;
+  return t.type === 'Income';
+};
+
+/**
  * Returns all raw ledger entries generated across all time for a specific account.
  */
 export const getRawEntriesForAccount = (
@@ -72,17 +252,6 @@ export const getRawEntriesForAccount = (
     const found = allAccounts.find(a => a.code === c);
     return found ? found.name : c;
   };
-
-  const isDepositTx = (t: FinanceTransaction) =>
-    t.type === 'Deposit' || t.purchaseType === 'Deposit' || (t.category && t.category.toLowerCase().includes('deposit'));
-  const isInvestmentTx = (t: FinanceTransaction) =>
-    t.type === 'Investment' || t.purchaseType === 'Investment' || (t.category && t.category.toLowerCase().includes('partner'));
-  const isAssetTx = (t: FinanceTransaction) =>
-    (t.type === 'Asset' || t.purchaseType === 'Asset') && !isDepositTx(t) && !isInvestmentTx(t);
-  const isExpenseTx = (t: FinanceTransaction) =>
-    t.type === 'Expense' && !isAssetTx(t) && !isDepositTx(t) && !isInvestmentTx(t);
-  const isIncomeTx = (t: FinanceTransaction) =>
-    t.type === 'Income' && !isInvestmentTx(t);
 
   // ----------------------------------------------------
   // 1. BANK ACCOUNT (1010)
@@ -153,12 +322,21 @@ export const getRawEntriesForAccount = (
 
     // Operating expenses paid via bank
     transactions.filter(t => isExpenseTx(t) && !isCashMode(t.paymentMode)).forEach(t => {
+      // Exclude unpaid accruals from bank outflow
+      if (t.purchaseType === 'Accrual') return;
+
       const amt = safeNum(t.amount);
-      const targetExpCode = EXPENSE_CATEGORY_TO_CODE[t.category] || '5040';
+      const targetExpCode = t.ledgerAccountCode || EXPENSE_CATEGORY_TO_CODE[t.category] || (t.purchaseType === 'Salary' ? '5010' : '5040');
+      const txnTypeLabel = t.purchaseType === 'Salary'
+        ? 'Salary Payment'
+        : t.purchaseType === 'AccrualSettlement'
+        ? 'Accrual Settlement'
+        : 'Expense Payment';
+
       entries.push({
         id: `txn-exp-${t.id || Math.random()}`,
         date: t.date,
-        voucherNumber: `EXP-${t.id ? t.id.slice(-6).toUpperCase() : 'TXN'}`,
+        voucherNumber: t.purchaseType === 'Salary' ? `SAL-${t.id ? t.id.slice(-6).toUpperCase() : 'TXN'}` : `EXP-${t.id ? t.id.slice(-6).toUpperCase() : 'TXN'}`,
         accountCode: '1010',
         accountName: account.name,
         counterAccountCode: targetExpCode,
@@ -167,7 +345,7 @@ export const getRawEntriesForAccount = (
         paymentMode: t.paymentMode || 'Bank Transfer',
         debit: 0,
         credit: amt,
-        transactionType: 'Expense Payment',
+        transactionType: txnTypeLabel,
         rawItem: t
       });
     });
@@ -212,12 +390,92 @@ export const getRawEntriesForAccount = (
         rawItem: t
       });
     });
+
+    // Contra: Cash in Hand deposited to Bank (Bank DEBIT, increases bank balance)
+    transactions.filter(t => isCashToBankTx(t)).forEach(t => {
+      const amt = safeNum(t.amount);
+      entries.push({
+        id: `txn-cnt-dep-${t.id || Math.random()}`,
+        date: t.date,
+        voucherNumber: `CNT-DEP-${t.id ? t.id.slice(-6).toUpperCase() : 'BNK'}`,
+        accountCode: '1010',
+        accountName: account.name,
+        counterAccountCode: '1020',
+        counterAccountName: 'Petty Cash & Physical Cash Drawer',
+        particulars: `Contra Deposit: Cash deposited to Bank ${t.transferDetails?.depositSlipNumber ? `(Slip #${t.transferDetails.depositSlipNumber})` : ''}`,
+        paymentMode: t.paymentMode || 'Cash to Bank Deposit',
+        debit: amt,
+        credit: 0,
+        transactionType: 'Contra Transfer',
+        rawItem: t
+      });
+    });
+
+    // Contra: Cash Withdrawn from Bank (Bank CREDIT, decreases bank balance)
+    transactions.filter(t => isBankToCashTx(t)).forEach(t => {
+      const amt = safeNum(t.amount);
+      entries.push({
+        id: `txn-cnt-wth-${t.id || Math.random()}`,
+        date: t.date,
+        voucherNumber: `CNT-WTH-${t.id ? t.id.slice(-6).toUpperCase() : 'CSH'}`,
+        accountCode: '1010',
+        accountName: account.name,
+        counterAccountCode: '1020',
+        counterAccountName: 'Petty Cash & Physical Cash Drawer',
+        particulars: `Contra Withdrawal: Cash withdrawn from Bank for Cash Drawer ${t.transferDetails?.depositSlipNumber ? `(Cheque/Ref #${t.transferDetails.depositSlipNumber})` : ''}`,
+        paymentMode: t.paymentMode || 'Bank to Cash Withdrawal',
+        debit: 0,
+        credit: amt,
+        transactionType: 'Contra Transfer',
+        rawItem: t
+      });
+    });
+
   }
 
   // ----------------------------------------------------
   // 2. CASH DRAWER / PETTY CASH (1020)
   // ----------------------------------------------------
   else if (code === '1020') {
+    // Contra: Cash in Hand deposited to Bank (Cash CREDIT, decreases physical cash)
+    transactions.filter(t => isCashToBankTx(t)).forEach(t => {
+      const amt = safeNum(t.amount);
+      entries.push({
+        id: `txn-cnt-csh-dep-${t.id || Math.random()}`,
+        date: t.date,
+        voucherNumber: `CNT-DEP-${t.id ? t.id.slice(-6).toUpperCase() : 'CSH'}`,
+        accountCode: '1020',
+        accountName: account.name,
+        counterAccountCode: '1010',
+        counterAccountName: 'Operating Bank Account (Primary Bank Account)',
+        particulars: `Contra Deposit: Cash deposited to ${t.transferDetails?.bankName || 'Bank'} ${t.transferDetails?.depositSlipNumber ? `(Slip #${t.transferDetails.depositSlipNumber})` : ''}`,
+        paymentMode: 'Cash to Bank Deposit',
+        debit: 0,
+        credit: amt,
+        transactionType: 'Contra Transfer',
+        rawItem: t
+      });
+    });
+
+    // Contra: Cash Withdrawn from Bank (Cash DEBIT, increases physical cash)
+    transactions.filter(t => isBankToCashTx(t)).forEach(t => {
+      const amt = safeNum(t.amount);
+      entries.push({
+        id: `txn-cnt-csh-wth-${t.id || Math.random()}`,
+        date: t.date,
+        voucherNumber: `CNT-WTH-${t.id ? t.id.slice(-6).toUpperCase() : 'CSH'}`,
+        accountCode: '1020',
+        accountName: account.name,
+        counterAccountCode: '1010',
+        counterAccountName: 'Operating Bank Account (Primary Bank Account)',
+        particulars: `Contra Withdrawal: Cash withdrawn from ${t.transferDetails?.bankName || 'Bank'} to Cash Drawer ${t.transferDetails?.depositSlipNumber ? `(Ref #${t.transferDetails.depositSlipNumber})` : ''}`,
+        paymentMode: 'Bank to Cash Withdrawal',
+        debit: amt,
+        credit: 0,
+        transactionType: 'Contra Transfer',
+        rawItem: t
+      });
+    });
     // Fee payments via physical cash
     fees.forEach(f => {
       const paid = safeNum(f.amountPaid);
@@ -283,12 +541,21 @@ export const getRawEntriesForAccount = (
 
     // Expenses paid via cash
     transactions.filter(t => isExpenseTx(t) && isCashMode(t.paymentMode)).forEach(t => {
+      // Exclude unpaid accruals from physical cash disbursement
+      if (t.purchaseType === 'Accrual') return;
+
       const amt = safeNum(t.amount);
-      const targetExpCode = EXPENSE_CATEGORY_TO_CODE[t.category] || '5040';
+      const targetExpCode = t.ledgerAccountCode || EXPENSE_CATEGORY_TO_CODE[t.category] || (t.purchaseType === 'Salary' ? '5010' : '5040');
+      const txnTypeLabel = t.purchaseType === 'Salary'
+        ? 'Salary Payment'
+        : t.purchaseType === 'AccrualSettlement'
+        ? 'Accrual Settlement'
+        : 'Expense Payment';
+
       entries.push({
         id: `txn-exp-csh-${t.id || Math.random()}`,
         date: t.date,
-        voucherNumber: `CSH-VOU-${t.id ? t.id.slice(-6).toUpperCase() : 'TXN'}`,
+        voucherNumber: t.purchaseType === 'Salary' ? `SAL-CSH-${t.id ? t.id.slice(-6).toUpperCase() : 'TXN'}` : `CSH-VOU-${t.id ? t.id.slice(-6).toUpperCase() : 'TXN'}`,
         accountCode: '1020',
         accountName: account.name,
         counterAccountCode: targetExpCode,
@@ -297,7 +564,7 @@ export const getRawEntriesForAccount = (
         paymentMode: 'Cash',
         debit: 0,
         credit: amt,
-        transactionType: 'Expense Payment',
+        transactionType: txnTypeLabel,
         rawItem: t
       });
     });
@@ -598,6 +865,124 @@ export const getRawEntriesForAccount = (
         transactionType: 'Depreciation Charge',
         rawItem: t
       });
+    });
+  }
+
+  // ----------------------------------------------------
+  // 12. ACCOUNTS PAYABLE / ACCRUED EXPENSES (2010)
+  // ----------------------------------------------------
+  else if (code === '2010') {
+    // A. Accrual Created (Credit 2010 to record liability)
+    transactions.filter(t => t.purchaseType === 'Accrual').forEach(t => {
+      const amt = safeNum(t.amount);
+      const expenseCode = t.ledgerAccountCode || '5020';
+      entries.push({
+        id: `acc-cr-${t.id || Math.random()}`,
+        date: t.date,
+        voucherNumber: `ACCR-${t.id ? t.id.slice(-6).toUpperCase() : 'AP'}`,
+        accountCode: '2010',
+        accountName: account.name,
+        counterAccountCode: expenseCode,
+        counterAccountName: findAccountName(expenseCode),
+        particulars: `Accrual Recorded: ${t.description || t.category} [${t.accrualDetails?.vendorOrRecipient || 'Vendor'}]`,
+        paymentMode: 'Accrual (Unpaid)',
+        debit: 0,
+        credit: amt,
+        transactionType: 'Accrual Liability Recognized',
+        rawItem: t
+      });
+    });
+
+    // B. Accrual Settled (Debit 2010 to reduce/extinguish liability)
+    transactions.filter(t => t.purchaseType === 'AccrualSettlement').forEach(t => {
+      const amt = safeNum(t.amount);
+      const isCash = isCashMode(t.paymentMode);
+      const bankCode = isCash ? '1020' : '1010';
+      entries.push({
+        id: `acc-dr-${t.id || Math.random()}`,
+        date: t.date,
+        voucherNumber: `SET-${t.id ? t.id.slice(-6).toUpperCase() : 'AP'}`,
+        accountCode: '2010',
+        accountName: account.name,
+        counterAccountCode: bankCode,
+        counterAccountName: findAccountName(bankCode),
+        particulars: `Accrual Payment/Settlement: ${t.description || t.category}`,
+        paymentMode: t.paymentMode || 'Bank Transfer',
+        debit: amt,
+        credit: 0,
+        transactionType: 'Accrual Settlement',
+        rawItem: t
+      });
+    });
+  }
+
+  // ----------------------------------------------------
+  // 13. ACCRUED STAFF SALARIES & CAREGIVER FEES (2030)
+  // ----------------------------------------------------
+  else if (code === '2030') {
+    // Outstanding balance recorded for salaries
+    transactions.filter(t => t.purchaseType === 'Salary' && t.salaryDetails?.balanceDue && t.salaryDetails.balanceDue > 0).forEach(t => {
+      const balDue = safeNum(t.salaryDetails?.balanceDue);
+      entries.push({
+        id: `sal-due-cr-${t.id || Math.random()}`,
+        date: t.date,
+        voucherNumber: `SAL-DUE-${t.id ? t.id.slice(-6).toUpperCase() : 'ACC'}`,
+        accountCode: '2030',
+        accountName: account.name,
+        counterAccountCode: '5010',
+        counterAccountName: findAccountName('5010'),
+        particulars: `Unpaid Salary Accrual: ${t.salaryDetails?.staffName} (${t.salaryDetails?.salaryMonth})`,
+        paymentMode: 'Salary Accrual',
+        debit: 0,
+        credit: balDue,
+        transactionType: 'Salary Accrual',
+        rawItem: t
+      });
+    });
+  }
+
+  // ----------------------------------------------------
+  // 14. CUSTOM USER-CREATED LEDGER ACCOUNTS (ANY TYPE)
+  // ----------------------------------------------------
+  else {
+    // Find all transactions that directly referenced this account code as ledger or contra
+    transactions.forEach(t => {
+      // Internal contra transfers (Cash Deposit to Bank, Cash Withdrawal) strictly affect only Bank (1010) and Cash (1020)
+      if (isTransferTx(t)) return;
+      const isPrimary = t.ledgerAccountCode === code;
+      const isContra = t.contraAccountCode === code;
+      const isCategoryMatch = account.linkedCategory && t.category && t.category.toLowerCase().includes(account.linkedCategory.toLowerCase());
+
+      if (isPrimary || isContra || isCategoryMatch) {
+        const amt = safeNum(t.amount);
+        const isCash = isCashMode(t.paymentMode);
+        const counterCode = isPrimary ? (t.contraAccountCode || (isCash ? '1020' : '1010')) : (t.ledgerAccountCode || '1010');
+
+        let isDebit = false;
+        if (account.normalBalance === 'Debit') {
+          // Normal Debit accounts (Assets, Expenses) increase with Debit
+          isDebit = isPrimary ? (t.type === 'Expense' || t.type === 'Asset') : (t.type === 'Income');
+        } else {
+          // Normal Credit accounts (Liabilities, Equity, Revenue) increase with Credit
+          isDebit = isPrimary ? (t.type === 'Expense' && t.purchaseType === 'AccrualSettlement') : false;
+        }
+
+        entries.push({
+          id: `cust-${code}-${t.id || Math.random()}`,
+          date: t.date,
+          voucherNumber: `VOU-${t.id ? t.id.slice(-6).toUpperCase() : 'CUST'}`,
+          accountCode: code,
+          accountName: account.name,
+          counterAccountCode: counterCode,
+          counterAccountName: findAccountName(counterCode),
+          particulars: `${t.description || t.category} [${t.category}]`,
+          paymentMode: t.paymentMode || 'Standard Entry',
+          debit: isDebit ? amt : 0,
+          credit: !isDebit ? amt : 0,
+          transactionType: t.type || 'Custom Entry',
+          rawItem: t
+        });
+      }
     });
   }
 

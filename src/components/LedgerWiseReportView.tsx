@@ -32,6 +32,7 @@ import {
   exportSingleLedgerToExcel,
   exportMasterLedgerToExcel
 } from '../services/ledgerService';
+import { DEFAULT_CHART_OF_ACCOUNTS } from '../services/chartOfAccountsService';
 import { format, startOfMonth, endOfMonth, subMonths } from 'date-fns';
 import { formatDate } from '../utils/dateUtils';
 
@@ -51,10 +52,28 @@ export const LedgerWiseReportView: React.FC<LedgerWiseReportViewProps> = ({
   // Mode: 'single' (detailed ledger for one account) | 'summary' (all ledgers master report)
   const [viewMode, setViewMode] = useState<'single' | 'summary'>('single');
 
+  // Fallback to all 32 default accounts if accounts prop is empty
+  const activeAccounts = useMemo(() => {
+    if (accounts && accounts.length > 0) return accounts;
+    return DEFAULT_CHART_OF_ACCOUNTS.map((acc, index) => ({
+      ...acc,
+      id: `default-${acc.code}-${index}`,
+      createdAt: '2025-01-01T00:00:00.000Z'
+    }));
+  }, [accounts]);
+
   // Selected Account Code for Single View
   const [selectedAccountCode, setSelectedAccountCode] = useState<string>(
     initialAccountCode || (accounts.length > 0 ? accounts[0].code : '1010')
   );
+
+  React.useEffect(() => {
+    if (initialAccountCode) {
+      setSelectedAccountCode(initialAccountCode);
+    } else if (!selectedAccountCode && activeAccounts.length > 0) {
+      setSelectedAccountCode(activeAccounts[0].code);
+    }
+  }, [initialAccountCode, activeAccounts, selectedAccountCode]);
 
   // Period Filter
   const [period, setPeriod] = useState<'this_month' | 'last_month' | 'this_quarter' | 'ytd' | 'all_time' | 'custom'>('this_month');
@@ -128,8 +147,8 @@ export const LedgerWiseReportView: React.FC<LedgerWiseReportViewProps> = ({
 
   // Selected account object
   const selectedAccount = useMemo(() => {
-    return accounts.find(a => a.code === selectedAccountCode) || accounts[0];
-  }, [accounts, selectedAccountCode]);
+    return activeAccounts.find(a => a.code === selectedAccountCode) || activeAccounts[0];
+  }, [activeAccounts, selectedAccountCode]);
 
   // Single Account Report
   const singleReport = useMemo(() => {
@@ -141,21 +160,21 @@ export const LedgerWiseReportView: React.FC<LedgerWiseReportViewProps> = ({
       periodLabel,
       transactions,
       fees,
-      accounts
+      activeAccounts
     );
-  }, [selectedAccount, startDate, endDate, periodLabel, transactions, fees, accounts]);
+  }, [selectedAccount, startDate, endDate, periodLabel, transactions, fees, activeAccounts]);
 
   // Master Summary Report
   const masterSummary = useMemo(() => {
     return generateMasterLedgerSummary(
-      accounts,
+      activeAccounts,
       startDate,
       endDate,
       periodLabel,
       transactions,
       fees
     );
-  }, [accounts, startDate, endDate, periodLabel, transactions, fees]);
+  }, [activeAccounts, startDate, endDate, periodLabel, transactions, fees]);
 
   // Filtered entries within single report
   const filteredEntries = useMemo(() => {
@@ -351,11 +370,11 @@ export const LedgerWiseReportView: React.FC<LedgerWiseReportViewProps> = ({
             <div className="flex items-center gap-2">
               <span className="text-xs font-bold text-gray-400 uppercase tracking-wider shrink-0">Account:</span>
               <select
-                value={selectedAccountCode}
+                value={selectedAccount?.code || selectedAccountCode}
                 onChange={e => setSelectedAccountCode(e.target.value)}
                 className="bg-white border border-gray-300 rounded-lg text-xs font-semibold text-gray-900 py-1.5 px-3 focus:outline-none focus:ring-2 focus:ring-indigo-500 max-w-xs md:max-w-sm truncate"
               >
-                {accounts.map(acc => (
+                {activeAccounts.map(acc => (
                   <option key={acc.code} value={acc.code}>
                     {acc.code} - {acc.name} ({acc.type})
                   </option>

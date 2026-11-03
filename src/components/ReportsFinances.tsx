@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { getFees, getAttendanceByMonth, getTransactions, addTransaction, updateTransaction, deleteTransaction } from '../services/api';
 import { Fee, Attendance, FinanceTransaction, AssetDetails, DepositDetails, TransactionType, PurchaseType, ChartOfAccountItem } from '../types';
-import { getChartOfAccounts } from '../services/chartOfAccountsService';
+import { getChartOfAccounts, DEFAULT_CHART_OF_ACCOUNTS } from '../services/chartOfAccountsService';
 import ChartOfAccountsView from './ChartOfAccountsView';
 import LedgerWiseReportView from './LedgerWiseReportView';
 import { FinancialDetailsSettingsTab } from './FinancialDetailsSettingsTab';
@@ -16,8 +16,14 @@ import {
   Package, Search, Building, Eye, X, Tag, CheckCircle2, SlidersHorizontal, Layers,
   Scale, FileText, Printer, ArrowUpRight, ArrowDownRight, Sparkles, Percent, Calendar,
   PieChart as PieChartIcon, Landmark, Banknote, Users, HandCoins, Wallet, Pencil, ArrowUpDown,
-  Filter, Check, BookOpen, Palette, ShieldCheck, ArrowRightLeft
+  Filter, Check, BookOpen, Palette, ShieldCheck, ArrowRightLeft, Clock
 } from 'lucide-react';
+import { getStaffSalaries, getAccruedExpenses, getCustomCategories } from '../services/accountingService';
+import { StaffSalary, AccruedExpense, CustomCategory } from '../types';
+import { StaffSalaryManager } from './StaffSalaryManager';
+import { AccrualManager } from './AccrualManager';
+import { CustomCategoryModal } from './CustomCategoryModal';
+import { CustomLedgerModal } from './CustomLedgerModal';
 import ExcelJS from 'exceljs';
 import { saveAs } from 'file-saver';
 import DeleteConfirmModal from './DeleteConfirmModal';
@@ -26,6 +32,16 @@ import { ToastContainer, ToastMessage } from './Toast';
 import { useTypography } from '../contexts/TypographyContext';
 import { StyledWordText } from './StyledWordText';
 import { formatDate } from '../utils/dateUtils';
+import {
+  isCashToBankTx,
+  isBankToCashTx,
+  isTransferTx,
+  isDepositTx,
+  isInvestmentTx,
+  isAssetTx,
+  isExpenseTx,
+  isIncomeTx
+} from '../services/ledgerService';
 
 const COLORS = ['#4f46e5', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
 const PARTNER_COLORS = ['#059669', '#2563eb', '#d97706', '#7c3aed', '#db2777', '#0891b2', '#ea580c', '#4b5563'];
@@ -111,10 +127,10 @@ const ReportsFinances = () => {
 
   const [searchParams, setSearchParams] = useSearchParams();
   const initialUrlTab = searchParams.get('tab');
-  const validTabs = ['dashboard', 'pnl', 'balance', 'ledger', 'accounts', 'partners', 'receipts', 'cashflow', 'financial'] as const;
+  const validTabs = ['dashboard', 'pnl', 'balance', 'ledger', 'accounts', 'partners', 'receipts', 'cashflow', 'salaries', 'accruals', 'financial'] as const;
 
   // Tabs
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'pnl' | 'balance' | 'ledger' | 'accounts' | 'partners' | 'receipts' | 'cashflow' | 'financial'>(
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'pnl' | 'balance' | 'ledger' | 'accounts' | 'partners' | 'receipts' | 'cashflow' | 'salaries' | 'accruals' | 'financial'>(
     validTabs.includes(initialUrlTab as any) ? (initialUrlTab as any) : 'dashboard'
   );
 
@@ -122,8 +138,24 @@ const ReportsFinances = () => {
     searchParams.get('account') || undefined
   );
 
-  // Chart of Accounts general ledger state
-  const [accountsList, setAccountsList] = useState<ChartOfAccountItem[]>([]);
+  // Chart of Accounts general ledger state - Pre-initialized with all 32 system accounts
+  const [accountsList, setAccountsList] = useState<ChartOfAccountItem[]>(() =>
+    DEFAULT_CHART_OF_ACCOUNTS.map((acc, index) => ({
+      ...acc,
+      id: `default-${acc.code}-${index}`,
+      createdAt: '2025-01-01T00:00:00.000Z'
+    }))
+  );
+  // Staff Salaries & Accruals state
+  const [salariesList, setSalariesList] = useState<StaffSalary[]>([]);
+  const [accrualsList, setAccrualsList] = useState<AccruedExpense[]>([]);
+  const [customCategoriesList, setCustomCategoriesList] = useState<CustomCategory[]>([]);
+
+  // Custom Category & Custom Ledger Modals
+  const [showCustomCategoryModal, setShowCustomCategoryModal] = useState(false);
+  const [customCategoryDefaultType, setCustomCategoryDefaultType] = useState<'Expense' | 'Income' | 'Asset' | 'Liability'>('Expense');
+  const [showCustomLedgerModal, setShowCustomLedgerModal] = useState(false);
+  const [customLedgerDefaultType, setCustomLedgerDefaultType] = useState<ChartOfAccountItem['type']>('Expense');
 
   const loadAccounts = async () => {
     try {
@@ -180,12 +212,24 @@ const ReportsFinances = () => {
   const [cashDepositFormData, setCashDepositFormData] = useState({
     date: format(new Date(), 'yyyy-MM-dd'),
     amount: '',
-    bankName: 'Primary Business Bank Account (Account #1020)',
+    bankName: 'Primary Business Bank Account (Account #1010)',
     depositSlipNumber: '',
     depositedBy: '',
     description: 'Cash in hand deposited to bank'
   });
   const [isDepositingCash, setIsDepositingCash] = useState(false);
+
+  // Bank to Cash Withdrawal (Contra Entry) Modal State
+  const [showCashWithdrawalModal, setShowCashWithdrawalModal] = useState(false);
+  const [cashWithdrawalFormData, setCashWithdrawalFormData] = useState({
+    date: format(new Date(), 'yyyy-MM-dd'),
+    amount: '',
+    bankName: 'Primary Business Bank Account (Account #1010)',
+    referenceNumber: '',
+    withdrawnBy: '',
+    description: 'Cash withdrawn from bank for centre cash drawer'
+  });
+  const [isWithdrawingCash, setIsWithdrawingCash] = useState(false);
 
   const addToast = (type: 'success' | 'error' | 'info', message: string) => {
     const id = Date.now().toString();
@@ -241,7 +285,8 @@ const ReportsFinances = () => {
     premisesOrAccount: '',
     refundable: true,
     referenceNumber: '',
-    termsOrDuration: ''
+    termsOrDuration: '',
+    ledgerAccountCode: ''
   });
 
   const loadData = async () => {
@@ -251,17 +296,25 @@ const ReportsFinances = () => {
       const sixMonthsAgo = startOfMonth(subMonths(today, 5));
       const endOfThisMonth = endOfMonth(today);
       
-      const [feesData, attendanceData, transData, coaData] = await Promise.all([
+      const results = await Promise.allSettled([
         getFees(),
         getAttendanceByMonth(format(sixMonthsAgo, 'yyyy-MM-dd'), format(endOfThisMonth, 'yyyy-MM-dd')),
         getTransactions(),
-        getChartOfAccounts()
+        getChartOfAccounts(),
+        getStaffSalaries(),
+        getAccruedExpenses(),
+        getCustomCategories()
       ]);
       
-      setFees(feesData);
-      setAttendance(attendanceData);
-      setTransactions(transData);
-      setAccountsList(coaData);
+      if (results[0].status === 'fulfilled') setFees(results[0].value);
+      if (results[1].status === 'fulfilled') setAttendance(results[1].value);
+      if (results[2].status === 'fulfilled') setTransactions(results[2].value);
+      if (results[3].status === 'fulfilled' && results[3].value.length > 0) {
+        setAccountsList(results[3].value);
+      }
+      if (results[4].status === 'fulfilled') setSalariesList(results[4].value);
+      if (results[5].status === 'fulfilled') setAccrualsList(results[5].value);
+      if (results[6].status === 'fulfilled') setCustomCategoriesList(results[6].value);
     } catch (error) {
       console.error("Failed to load reports data", error);
     } finally {
@@ -272,31 +325,6 @@ const ReportsFinances = () => {
   useEffect(() => {
     loadData();
   }, []);
-
-  // Classification Helpers
-  const isDepositTx = (t: FinanceTransaction): boolean => {
-    return t.type === 'Deposit' || t.purchaseType === 'Deposit' || (t.category && t.category.toLowerCase().includes('deposit'));
-  };
-
-  const isInvestmentTx = (t: FinanceTransaction): boolean => {
-    return (t.type === 'Investment' || t.purchaseType === 'Investment' || (t.category && t.category.toLowerCase().includes('partner capital'))) && !isDepositTx(t);
-  };
-
-  const isAssetTx = (t: FinanceTransaction): boolean => {
-    return (t.type === 'Asset' || t.purchaseType === 'Asset') && !isInvestmentTx(t) && !isDepositTx(t);
-  };
-
-  const isTransferTx = (t: FinanceTransaction): boolean => {
-    return t.type === 'Transfer' || t.purchaseType === 'Transfer' || t.category === 'Cash Deposit to Bank' || t.category === 'Cash to Bank Transfer';
-  };
-
-  const isExpenseTx = (t: FinanceTransaction): boolean => {
-    return t.type === 'Expense' && t.purchaseType !== 'Asset' && t.purchaseType !== 'Deposit' && t.purchaseType !== 'Transfer' && !isInvestmentTx(t) && !isDepositTx(t) && !isTransferTx(t);
-  };
-
-  const isIncomeTx = (t: FinanceTransaction): boolean => {
-    return t.type === 'Income' && !isInvestmentTx(t) && !isDepositTx(t) && !isTransferTx(t);
-  };
 
   const safeNum = (val: any) => Number.isNaN(Number(val)) ? 0 : Number(val);
 
@@ -447,11 +475,12 @@ const ReportsFinances = () => {
       } else {
         txToSave = {
           date: formData.date,
-          type: 'Expense',
+          type: formTransactionType === 'Income' ? 'Income' : 'Expense',
           purchaseType: 'Expense',
           category: formData.category,
           amount: parsedAmount,
           paymentMode: formData.paymentMode || PAYMENT_MODES[0],
+          ledgerAccountCode: formData.ledgerAccountCode?.trim() || undefined,
           description: formData.referenceNumber?.trim()
             ? `${formData.description?.trim() || formData.category} (Ref: ${formData.referenceNumber.trim()})`
             : formData.description
@@ -464,6 +493,8 @@ const ReportsFinances = () => {
         ? `Security Deposit of ₹${parsedAmount.toLocaleString('en-IN')} paid to ${formData.payeeName?.trim() || 'Landlord'} recorded under Current Assets!`
         : formTransactionType === 'Investment'
         ? `Investment of ₹${parsedAmount.toLocaleString()} by ${formData.partnerName.trim()} recorded successfully!`
+        : formTransactionType === 'Income'
+        ? `Income entry of ₹${parsedAmount.toLocaleString('en-IN')} recorded successfully!`
         : 'Transaction recorded successfully!'
       );
       // Reset form
@@ -486,7 +517,8 @@ const ReportsFinances = () => {
         premisesOrAccount: '',
         refundable: true,
         referenceNumber: '',
-        termsOrDuration: ''
+        termsOrDuration: '',
+        ledgerAccountCode: ''
       });
       loadData();
     } catch (error) {
@@ -499,7 +531,7 @@ const ReportsFinances = () => {
     setCashDepositFormData({
       date: format(new Date(), 'yyyy-MM-dd'),
       amount: rp.cashBalance > 0 ? rp.cashBalance.toString() : '',
-      bankName: 'Primary Business Bank Account (Account #1020)',
+      bankName: 'Primary Business Bank Account (Account #1010)',
       depositSlipNumber: '',
       depositedBy: '',
       description: 'Cash in hand deposited to bank'
@@ -525,10 +557,12 @@ const ReportsFinances = () => {
         amount: parsedAmount,
         paymentMode: 'Cash to Bank Deposit',
         description: cashDepositFormData.description.trim() || `Cash deposited to ${cashDepositFormData.bankName}`,
+        ledgerAccountCode: '1010',
+        contraAccountCode: '1020',
         transferDetails: {
           transferType: 'CashToBank',
-          fromAccount: 'Cash in Hand (Account 1010)',
-          toAccount: cashDepositFormData.bankName.trim() || 'Primary Bank Account (Account 1020)',
+          fromAccount: 'Cash in Hand (Account 1020)',
+          toAccount: cashDepositFormData.bankName.trim() || 'Primary Bank Account (Account 1010)',
           bankName: cashDepositFormData.bankName.trim(),
           depositSlipNumber: cashDepositFormData.depositSlipNumber?.trim() || undefined,
           depositedBy: cashDepositFormData.depositedBy?.trim() || undefined,
@@ -548,12 +582,67 @@ const ReportsFinances = () => {
     }
   };
 
+  const handleOpenCashWithdrawalModal = () => {
+    setCashWithdrawalFormData({
+      date: format(new Date(), 'yyyy-MM-dd'),
+      amount: '',
+      bankName: 'Primary Business Bank Account (Account #1010)',
+      referenceNumber: '',
+      withdrawnBy: '',
+      description: 'Cash withdrawn from bank for centre cash drawer'
+    });
+    setShowCashWithdrawalModal(true);
+  };
+
+  const handleCashWithdrawalSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const parsedAmount = parseFloat(cashWithdrawalFormData.amount);
+    if (!cashWithdrawalFormData.date || Number.isNaN(parsedAmount) || parsedAmount <= 0) {
+      addToast('error', 'Please enter a valid withdrawal date and positive amount.');
+      return;
+    }
+
+    setIsWithdrawingCash(true);
+    try {
+      const txToSave: Omit<FinanceTransaction, 'id'> = {
+        date: cashWithdrawalFormData.date,
+        type: 'Transfer',
+        purchaseType: 'Transfer',
+        category: 'Cash Withdrawal from Bank',
+        amount: parsedAmount,
+        paymentMode: 'Bank to Cash Withdrawal',
+        description: cashWithdrawalFormData.description.trim() || `Cash withdrawn from ${cashWithdrawalFormData.bankName}`,
+        ledgerAccountCode: '1020',
+        contraAccountCode: '1010',
+        transferDetails: {
+          transferType: 'BankToCash',
+          fromAccount: cashWithdrawalFormData.bankName.trim() || 'Primary Bank Account (Account 1010)',
+          toAccount: 'Cash in Hand (Account 1020)',
+          bankName: cashWithdrawalFormData.bankName.trim(),
+          depositSlipNumber: cashWithdrawalFormData.referenceNumber?.trim() || undefined,
+          depositedBy: cashWithdrawalFormData.withdrawnBy?.trim() || undefined,
+          notes: cashWithdrawalFormData.description.trim()
+        }
+      };
+
+      await addTransaction(txToSave);
+      setShowCashWithdrawalModal(false);
+      addToast('success', `₹${parsedAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })} withdrawn from Bank to Cash in Hand!`);
+      loadData();
+    } catch (err) {
+      console.error("Error withdrawing cash from bank:", err);
+      addToast('error', 'Failed to record cash withdrawal. Please try again.');
+    } finally {
+      setIsWithdrawingCash(false);
+    }
+  };
+
   const handleOpenEditTransaction = (tx: FinanceTransaction) => {
     let resolvedType: 'Expense' | 'Income' | 'Asset' | 'Investment' | 'Deposit' | 'Transfer' = 'Expense';
-    if (isInvestmentTx(tx)) resolvedType = 'Investment';
+    if (isTransferTx(tx)) resolvedType = 'Transfer';
+    else if (isInvestmentTx(tx)) resolvedType = 'Investment';
     else if (isAssetTx(tx)) resolvedType = 'Asset';
     else if (isDepositTx(tx)) resolvedType = 'Deposit';
-    else if (isTransferTx(tx)) resolvedType = 'Transfer';
     else if (isIncomeTx(tx)) resolvedType = 'Income';
     else resolvedType = 'Expense';
 
@@ -566,7 +655,7 @@ const ReportsFinances = () => {
       : resolvedType === 'Investment'
       ? (PARTNER_INVESTMENT_CATEGORIES.includes(tx.category) ? tx.category : PARTNER_INVESTMENT_CATEGORIES[0])
       : resolvedType === 'Transfer'
-      ? 'Cash Deposit to Bank'
+      ? (isBankToCashTx(tx) ? 'Cash Withdrawal from Bank' : 'Cash Deposit to Bank')
       : (EXPENSE_CATEGORIES.includes(tx.category) ? tx.category : EXPENSE_CATEGORIES[0]);
 
     setTransactionToEdit(tx);
@@ -590,7 +679,7 @@ const ReportsFinances = () => {
       refundable: tx.depositDetails?.refundable !== false,
       referenceNumber: tx.depositDetails?.referenceNumber || '',
       termsOrDuration: tx.depositDetails?.termsOrDuration || '',
-      bankName: tx.transferDetails?.bankName || tx.transferDetails?.toAccount || 'Primary Business Bank Account (Account #1020)',
+      bankName: tx.transferDetails?.bankName || (isBankToCashTx(tx) ? tx.transferDetails?.fromAccount : tx.transferDetails?.toAccount) || 'Primary Business Bank Account (Account #1010)',
       depositSlipNumber: tx.transferDetails?.depositSlipNumber || '',
       depositedBy: tx.transferDetails?.depositedBy || ''
     });
@@ -615,24 +704,50 @@ const ReportsFinances = () => {
       let updatedData: Partial<FinanceTransaction>;
 
       if (editTxData.type === 'Transfer') {
-        updatedData = {
-          date: editTxData.date,
-          amount: parsedAmount,
-          category: 'Cash Deposit to Bank',
-          paymentMode: 'Cash to Bank Deposit',
-          description: editTxData.description.trim() || `Cash deposited to ${editTxData.bankName}`,
-          type: 'Transfer',
-          purchaseType: 'Transfer',
-          transferDetails: {
-            transferType: 'CashToBank',
-            fromAccount: 'Cash in Hand (Account 1010)',
-            toAccount: editTxData.bankName.trim() || 'Primary Bank Account (Account 1020)',
-            bankName: editTxData.bankName.trim(),
-            depositSlipNumber: editTxData.depositSlipNumber?.trim() || undefined,
-            depositedBy: editTxData.depositedBy?.trim() || undefined,
-            notes: editTxData.description.trim()
-          }
-        };
+        const isWithdrawal = isBankToCashTx(transactionToEdit) || editTxData.category === 'Cash Withdrawal from Bank';
+        if (isWithdrawal) {
+          updatedData = {
+            date: editTxData.date,
+            amount: parsedAmount,
+            category: 'Cash Withdrawal from Bank',
+            paymentMode: 'Bank to Cash Withdrawal',
+            description: editTxData.description.trim() || `Cash withdrawn from ${editTxData.bankName}`,
+            type: 'Transfer',
+            purchaseType: 'Transfer',
+            ledgerAccountCode: '1020',
+            contraAccountCode: '1010',
+            transferDetails: {
+              transferType: 'BankToCash',
+              fromAccount: editTxData.bankName.trim() || 'Primary Bank Account (Account 1010)',
+              toAccount: 'Cash in Hand (Account 1020)',
+              bankName: editTxData.bankName.trim(),
+              depositSlipNumber: editTxData.depositSlipNumber?.trim() || undefined,
+              depositedBy: editTxData.depositedBy?.trim() || undefined,
+              notes: editTxData.description.trim()
+            }
+          };
+        } else {
+          updatedData = {
+            date: editTxData.date,
+            amount: parsedAmount,
+            category: 'Cash Deposit to Bank',
+            paymentMode: 'Cash to Bank Deposit',
+            description: editTxData.description.trim() || `Cash deposited to ${editTxData.bankName}`,
+            type: 'Transfer',
+            purchaseType: 'Transfer',
+            ledgerAccountCode: '1010',
+            contraAccountCode: '1020',
+            transferDetails: {
+              transferType: 'CashToBank',
+              fromAccount: 'Cash in Hand (Account 1020)',
+              toAccount: editTxData.bankName.trim() || 'Primary Bank Account (Account 1010)',
+              bankName: editTxData.bankName.trim(),
+              depositSlipNumber: editTxData.depositSlipNumber?.trim() || undefined,
+              depositedBy: editTxData.depositedBy?.trim() || undefined,
+              notes: editTxData.description.trim()
+            }
+          };
+        }
       } else if (editTxData.type === 'Investment') {
         if (!editTxData.partnerName.trim()) {
           addToast('error', 'Please specify the partner name.');
@@ -811,7 +926,7 @@ const ReportsFinances = () => {
           months[key].income += safeNum(t.amount);
         } else if (isAssetTx(t)) {
           months[key].assets += safeNum(t.amount);
-        } else {
+        } else if (isExpenseTx(t)) {
           months[key].expense += safeNum(t.amount);
         }
       }
@@ -893,9 +1008,16 @@ const ReportsFinances = () => {
     let bankCapitalPayments = 0;
     let cashCapitalPayments = 0;
 
+    let totalDepositPayments = 0;
+    let bankDepositPayments = 0;
+    let cashDepositPayments = 0;
+
     let totalPartnerInvestments = 0;
     let bankPartnerInvestments = 0;
     let cashPartnerInvestments = 0;
+
+    let totalCashDepositedToBank = 0;
+    let totalCashWithdrawnFromBank = 0;
 
     const receiptsByCategory: Record<string, number> = { 'Tuition Fees': 0 };
     const bankReceiptsByCategory: Record<string, number> = {};
@@ -903,6 +1025,7 @@ const ReportsFinances = () => {
     const partnerInvestmentsByName: Record<string, number> = {};
     const operatingPaymentsByCategory: Record<string, number> = {};
     const capitalPaymentsByCategory: Record<string, number> = {};
+    const depositPaymentsByCategory: Record<string, number> = {};
 
     fees.forEach(f => {
       const paid = safeNum(f.amountPaid);
@@ -924,15 +1047,13 @@ const ReportsFinances = () => {
       const isCash = isCashPaymentMode(t.paymentMode);
 
       if (isTransferTx(t)) {
-        // Contra Entry: Cash in Hand deposited to Bank
-        // Physical cash decreases, bank balance increases. Net overall liquidity is preserved.
-        totalReceipts += amt;
-        bankReceipts += amt;
-        totalOperatingPayments += amt;
-        cashOperatingPayments += amt;
-        receiptsByCategory['Cash Deposited to Bank (Contra)'] = (receiptsByCategory['Cash Deposited to Bank (Contra)'] || 0) + amt;
-        bankReceiptsByCategory['Cash Deposited to Bank'] = (bankReceiptsByCategory['Cash Deposited to Bank'] || 0) + amt;
-        operatingPaymentsByCategory['Cash Deposited to Bank (Contra)'] = (operatingPaymentsByCategory['Cash Deposited to Bank (Contra)'] || 0) + amt;
+        // Internal Contra Transfer between Bank and Physical Cash
+        // DOES NOT impact Operating Expenses, P&L, or Total Receipts/Payments
+        if (isBankToCashTx(t)) {
+          totalCashWithdrawnFromBank += amt;
+        } else {
+          totalCashDepositedToBank += amt;
+        }
       } else if (isInvestmentTx(t)) {
         const pName = t.partnerName?.trim() || 'Partner Contribution';
         const label = `Partner Capital (${pName})`;
@@ -964,7 +1085,17 @@ const ReportsFinances = () => {
         } else {
           bankCapitalPayments += amt;
         }
-      } else {
+      } else if (isDepositTx(t)) {
+        const catName = t.depositDetails?.depositCategory || t.category || 'Security Deposit';
+        depositPaymentsByCategory[catName] = (depositPaymentsByCategory[catName] || 0) + amt;
+        totalDepositPayments += amt;
+        if (isCash) {
+          cashDepositPayments += amt;
+        } else {
+          bankDepositPayments += amt;
+        }
+      } else if (isExpenseTx(t)) {
+        if (t.purchaseType === 'Accrual') return; // Unpaid accrual liability - no cash outflow
         operatingPaymentsByCategory[t.category] = (operatingPaymentsByCategory[t.category] || 0) + amt;
         totalOperatingPayments += amt;
         if (isCash) {
@@ -975,13 +1106,13 @@ const ReportsFinances = () => {
       }
     });
 
-    const bankPayments = bankOperatingPayments + bankCapitalPayments;
-    const cashPayments = cashOperatingPayments + cashCapitalPayments;
-    const totalPayments = totalOperatingPayments + totalCapitalPayments;
+    const bankPayments = bankOperatingPayments + bankCapitalPayments + bankDepositPayments;
+    const cashPayments = cashOperatingPayments + cashCapitalPayments + cashDepositPayments;
+    const totalPayments = totalOperatingPayments + totalCapitalPayments + totalDepositPayments;
 
-    const bankBalance = bankReceipts - bankPayments;
-    const cashBalance = cashReceipts - cashPayments;
-    const closingBalance = totalReceipts - totalPayments;
+    const bankBalance = (bankReceipts - bankPayments) + totalCashDepositedToBank - totalCashWithdrawnFromBank;
+    const cashBalance = (cashReceipts - cashPayments) - totalCashDepositedToBank + totalCashWithdrawnFromBank;
+    const closingBalance = bankBalance + cashBalance;
 
     return { 
       totalReceipts, 
@@ -996,6 +1127,12 @@ const ReportsFinances = () => {
       totalCapitalPayments,
       bankCapitalPayments,
       cashCapitalPayments,
+      totalDepositPayments,
+      bankDepositPayments,
+      cashDepositPayments,
+      depositPaymentsByCategory,
+      totalCashDepositedToBank,
+      totalCashWithdrawnFromBank,
       totalPartnerInvestments,
       bankPartnerInvestments,
       cashPartnerInvestments,
@@ -1017,7 +1154,6 @@ const ReportsFinances = () => {
     let openingBalance = 0;
     let openingBankBalance = 0;
     let openingCashBalance = 0;
-
     let inflows = 0;
     let bankInflows = 0;
     let cashInflows = 0;
@@ -1033,6 +1169,9 @@ const ReportsFinances = () => {
     let financingInflows = 0;
     let bankFinancingInflows = 0;
     let cashFinancingInflows = 0;
+
+    let monthCashDepositedToBank = 0;
+    let monthCashWithdrawnFromBank = 0;
     
     // Calculate opening balance (all transactions before this month)
     fees.forEach(f => {
@@ -1055,25 +1194,33 @@ const ReportsFinances = () => {
 
       if (t.date && !t.date.startsWith(currentMonthPrefix) && t.date < currentMonthPrefix) {
         if (isTransferTx(t)) {
-          // Historical contra entry: shifted funds from cash to bank
-          openingBankBalance += amt;
-          openingCashBalance -= amt;
+          // Historical contra entry: only shifts funds between bank and cash, overall openingBalance is constant
+          if (isBankToCashTx(t)) {
+            openingBankBalance -= amt;
+            openingCashBalance += amt;
+          } else {
+            openingBankBalance += amt;
+            openingCashBalance -= amt;
+          }
         } else if (isIncomeTx(t) || isInvestmentTx(t)) {
           openingBalance += amt;
           if (isCash) openingCashBalance += amt;
           else openingBankBalance += amt;
         } else {
-          openingBalance -= amt;
-          if (isCash) openingCashBalance -= amt;
-          else openingBankBalance += amt;
+          if (t.purchaseType !== 'Accrual') {
+            openingBalance -= amt;
+            if (isCash) openingCashBalance -= amt;
+            else openingBankBalance -= amt;
+          }
         }
       } else if (t.date && t.date.startsWith(currentMonthPrefix)) {
         if (isTransferTx(t)) {
-          // Contra flow in current month: cash outflow, bank inflow
-          bankInflows += amt;
-          cashOperatingOutflows += amt;
-          inflows += amt;
-          operatingOutflows += amt;
+          // Current month contra entry: internal liquidity transfer (Zero impact on operating P&L / expenses)
+          if (isBankToCashTx(t)) {
+            monthCashWithdrawnFromBank += amt;
+          } else {
+            monthCashDepositedToBank += amt;
+          }
         } else if (isInvestmentTx(t)) {
           financingInflows += amt;
           inflows += amt;
@@ -1096,20 +1243,25 @@ const ReportsFinances = () => {
           capitalOutflows += amt;
           if (isCash) cashCapitalOutflows += amt;
           else bankCapitalOutflows += amt;
-        } else {
-          operatingOutflows += amt;
-          if (isCash) cashOperatingOutflows += amt;
-          else bankOperatingOutflows += amt;
+        } else if (isExpenseTx(t)) {
+          if (t.purchaseType !== 'Accrual') {
+            operatingOutflows += amt;
+            if (isCash) cashOperatingOutflows += amt;
+            else bankOperatingOutflows += amt;
+          }
         }
       }
     });
+
+    const monthContraBank = monthCashDepositedToBank - monthCashWithdrawnFromBank;
+    const monthContraCash = monthCashWithdrawnFromBank - monthCashDepositedToBank;
 
     const bankOutflows = bankOperatingOutflows + bankCapitalOutflows;
     const cashOutflows = cashOperatingOutflows + cashCapitalOutflows;
     const totalOutflows = operatingOutflows + capitalOutflows;
 
-    const netBankFlow = bankInflows - bankOutflows;
-    const netCashFlow = cashInflows - cashOutflows;
+    const netBankFlow = (bankInflows - bankOutflows) + monthContraBank;
+    const netCashFlow = (cashInflows - cashOutflows) + monthContraCash;
     const netCashFlowTotal = inflows - totalOutflows;
 
     const closingBankBalance = openingBankBalance + netBankFlow;
@@ -1135,6 +1287,10 @@ const ReportsFinances = () => {
       totalOutflows, 
       bankOutflows,
       cashOutflows,
+      monthCashDepositedToBank,
+      monthCashWithdrawnFromBank,
+      monthContraBank,
+      monthContraCash,
       netBankFlow,
       netCashFlow,
       netCashFlowTotal,
@@ -1217,8 +1373,12 @@ const ReportsFinances = () => {
     });
 
     const totalAssets = currentAssets + totalFixedAssets;
-    const liabilities = 0; // Current liabilities
-    const equity = totalAssets - liabilities; // Balances perfectly
+    
+    // Current Liabilities from pending Accruals (2010) and Accrued Staff Salaries (2030)
+    const accountsPayable = accrualsList.filter(a => a.status !== 'Settled').reduce((sum, a) => sum + (a.balanceDue || 0), 0);
+    const accruedSalaries = salariesList.filter(s => s.status !== 'Paid' && s.status !== 'Advance').reduce((sum, s) => sum + (s.balanceDue || 0), 0);
+    const liabilities = accountsPayable + accruedSalaries; // Current liabilities
+    const equity = totalAssets - liabilities; // Assets = Liabilities + Equity
     const retainedEarnings = equity - totalPartnerCapital;
 
     return { 
@@ -1930,13 +2090,22 @@ const ReportsFinances = () => {
         </div>
         <div className="flex flex-wrap items-center gap-2.5">
           <button
+            onClick={handleOpenCashWithdrawalModal}
+            className="inline-flex items-center px-3 py-2 border border-blue-300 rounded-lg shadow-xs font-semibold text-blue-800 bg-blue-50 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-400 transition-colors"
+            style={{ fontSize: `${elementFontSizes.buttonText}px` }}
+            title="Withdraw Cash from Bank to Physical Cash Drawer (Contra Withdrawal)"
+          >
+            <ArrowRightLeft className="-ml-0.5 mr-1.5 h-4 w-4 text-blue-700" />
+            Withdraw Cash
+          </button>
+          <button
             onClick={handleOpenCashDepositModal}
             className="inline-flex items-center px-3 py-2 border border-emerald-300 rounded-lg shadow-xs font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 focus:outline-none focus:ring-2 focus:ring-emerald-400 transition-colors"
             style={{ fontSize: `${elementFontSizes.buttonText}px` }}
             title="Convert Cash in Hand to Bank (Contra Deposit)"
           >
             <ArrowRightLeft className="-ml-0.5 mr-1.5 h-4 w-4 text-emerald-700" />
-            Deposit Cash to Bank
+            Deposit Cash
           </button>
           <button
             onClick={() => handleOpenAddForm('Deposit')}
@@ -1961,6 +2130,22 @@ const ReportsFinances = () => {
           >
             <Package className="-ml-0.5 mr-1.5 h-4 w-4 text-indigo-600" />
             + Record Asset
+          </button>
+          <button
+            onClick={() => setActiveTab('salaries')}
+            className="inline-flex items-center px-3 py-2 border border-indigo-200 rounded-lg shadow-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 focus:outline-none focus:ring-2 focus:ring-indigo-400 transition-colors"
+            style={{ fontSize: `${elementFontSizes.buttonText}px` }}
+          >
+            <Users className="-ml-0.5 mr-1.5 h-4 w-4 text-indigo-600" />
+            + Staff Salary
+          </button>
+          <button
+            onClick={() => setActiveTab('accruals')}
+            className="inline-flex items-center px-3 py-2 border border-amber-200 rounded-lg shadow-xs font-semibold text-amber-800 bg-amber-50 hover:bg-amber-100 focus:outline-none focus:ring-2 focus:ring-amber-400 transition-colors"
+            style={{ fontSize: `${elementFontSizes.buttonText}px` }}
+          >
+            <Clock className="-ml-0.5 mr-1.5 h-4 w-4 text-amber-600" />
+            + Accrual Entry
           </button>
           <button
             onClick={() => handleOpenAddForm('Expense')}
@@ -2005,6 +2190,15 @@ const ReportsFinances = () => {
               </p>
             </div>
           </div>
+          <button
+            type="button"
+            onClick={handleOpenCashWithdrawalModal}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold text-blue-800 bg-blue-100 hover:bg-blue-200 border border-blue-300 transition-colors shrink-0"
+            title="Withdraw Cash from Bank to Physical Cash Drawer (Contra Entry)"
+          >
+            <ArrowRightLeft className="w-3.5 h-3.5 text-blue-700" />
+            Withdraw Cash
+          </button>
         </div>
 
         {/* Cash Balance Card */}
@@ -2164,6 +2358,38 @@ const ReportsFinances = () => {
           >
             <DollarSign className="h-4 w-4" />
             Cash Flow
+          </button>
+          <button
+            onClick={() => setActiveTab('salaries')}
+            className={`${
+              activeTab === 'salaries'
+                ? 'border-indigo-600 text-indigo-700 font-bold'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            } whitespace-nowrap pb-3.5 px-1 border-b-2 font-medium text-sm flex items-center gap-2 transition-colors focus:outline-none`}
+          >
+            <Users className="h-4 w-4 text-indigo-600" />
+            Staff Salaries
+            {salariesList.filter(s => s.status !== 'Paid' && s.status !== 'Advance').length > 0 && (
+              <span className="ml-1 bg-rose-50 text-rose-700 text-xs px-2 py-0.5 rounded-full font-bold border border-rose-200">
+                {salariesList.filter(s => s.status !== 'Paid' && s.status !== 'Advance').length}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={() => setActiveTab('accruals')}
+            className={`${
+              activeTab === 'accruals'
+                ? 'border-amber-600 text-amber-700 font-bold'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            } whitespace-nowrap pb-3.5 px-1 border-b-2 font-medium text-sm flex items-center gap-2 transition-colors focus:outline-none`}
+          >
+            <Clock className="h-4 w-4 text-amber-600" />
+            Accruals & Payables
+            {accrualsList.filter(a => a.status !== 'Settled').length > 0 && (
+              <span className="ml-1 bg-amber-50 text-amber-700 text-xs px-2 py-0.5 rounded-full font-bold border border-amber-200">
+                {accrualsList.filter(a => a.status !== 'Settled').length}
+              </span>
+            )}
           </button>
           <button
             onClick={() => setActiveTab('financial')}
@@ -2642,17 +2868,67 @@ const ReportsFinances = () => {
                   /* OPERATING EXPENSE OR INCOME DETAILS */
                   <div className="space-y-4">
                     <div>
-                      <label className="block text-sm font-medium text-gray-700">
-                        {formTransactionType === 'Income' ? 'Income Category' : 'Expense Category'}
-                      </label>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider">
+                          {formTransactionType === 'Income' ? 'Income Category' : 'Expense Category'} *
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCustomCategoryDefaultType(formTransactionType === 'Income' ? 'Income' : 'Expense');
+                            setShowCustomCategoryModal(true);
+                          }}
+                          className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center space-x-1"
+                        >
+                          <Plus className="w-3 h-3 inline" />
+                          <span>New Category</span>
+                        </button>
+                      </div>
                       <select
+                        required
                         value={formData.category}
                         onChange={e => setFormData({ ...formData, category: e.target.value })}
-                        className="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border"
+                        className="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border bg-white"
                       >
-                        {(formTransactionType === 'Income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES).map(cat => (
+                        {(formTransactionType === 'Income' 
+                          ? Array.from(new Set([...INCOME_CATEGORIES, ...customCategoriesList.filter(c => c.type === 'Income').map(c => c.name)]))
+                          : Array.from(new Set([...EXPENSE_CATEGORIES, ...customCategoriesList.filter(c => c.type === 'Expense').map(c => c.name)]))
+                        ).map(cat => (
                           <option key={cat} value={cat}>{cat}</option>
                         ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider">
+                          General Ledger Account (Optional)
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCustomLedgerDefaultType(formTransactionType === 'Income' ? 'Revenue' : 'Expense');
+                            setShowCustomLedgerModal(true);
+                          }}
+                          className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center space-x-1"
+                        >
+                          <Plus className="w-3 h-3 inline" />
+                          <span>New Ledger Head</span>
+                        </button>
+                      </div>
+                      <select
+                        value={formData.ledgerAccountCode}
+                        onChange={e => setFormData({ ...formData, ledgerAccountCode: e.target.value })}
+                        className="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border"
+                      >
+                        <option value="">-- Auto-select from Category --</option>
+                        {accountsList
+                          .filter(a => formTransactionType === 'Income' ? a.type === 'Revenue' : a.type === 'Expense')
+                          .map(a => (
+                            <option key={a.code} value={a.code}>
+                              {a.code} - {a.name}
+                            </option>
+                          ))}
                       </select>
                     </div>
 
@@ -3793,11 +4069,11 @@ const ReportsFinances = () => {
                 <button
                   onClick={() => setTxFilter('TRANSFER')}
                   className={`px-3 py-1 text-xs font-semibold rounded-md transition-all ${
-                    txFilter === 'TRANSFER' ? 'bg-emerald-100 text-emerald-800 shadow-sm' : 'text-gray-600 hover:text-gray-900'
+                    txFilter === 'TRANSFER' ? 'bg-cyan-100 text-cyan-800 shadow-sm' : 'text-gray-600 hover:text-gray-900'
                   }`}
-                  title="Cash in Hand deposited to Bank Account (Contra)"
+                  title="Cash & Bank Contra Transfers (Deposits & Withdrawals)"
                 >
-                  Cash to Bank (Contra)
+                  Contra Transfers ({transactions.filter(isTransferTx).length})
                 </button>
               </div>
             </div>
@@ -3815,12 +4091,13 @@ const ReportsFinances = () => {
                   const isTransfer = isTransferTx(transaction);
                   const isExpense = isExpenseTx(transaction);
                   const isIncome = isIncomeTx(transaction);
+                  const isBankToCash = isBankToCashTx(transaction);
 
                   return (
                     <li key={transaction.id} className="px-4 py-4 sm:px-6 hover:bg-gray-50 flex justify-between items-center transition-colors">
                       <div className="flex items-center space-x-4">
                         <div className={`flex-shrink-0 h-10 w-10 rounded-full flex items-center justify-center ${
-                          isTransfer ? 'bg-cyan-100 text-cyan-700' : (isInvestment ? 'bg-purple-100 text-purple-600' : (isIncome ? 'bg-green-100 text-green-600' : (isDeposit ? 'bg-teal-100 text-teal-700' : (isAsset ? 'bg-indigo-100 text-indigo-600' : 'bg-red-100 text-red-600'))))
+                          isTransfer ? (isBankToCash ? 'bg-blue-100 text-blue-700' : 'bg-emerald-100 text-emerald-700') : (isInvestment ? 'bg-purple-100 text-purple-600' : (isIncome ? 'bg-green-100 text-green-600' : (isDeposit ? 'bg-teal-100 text-teal-700' : (isAsset ? 'bg-indigo-100 text-indigo-600' : 'bg-red-100 text-red-600'))))
                         }`}>
                           {isTransfer ? (
                             <ArrowRightLeft className="h-5 w-5" />
@@ -3841,7 +4118,9 @@ const ReportsFinances = () => {
                           <div className="flex items-center space-x-2">
                             <p className="text-sm font-bold text-gray-900">
                               {isTransfer
-                                ? (transaction.description || 'Cash Deposited to Bank Account')
+                                ? (isBankToCash
+                                    ? (transaction.description || 'Cash Withdrawn from Bank')
+                                    : (transaction.description || 'Cash Deposited to Bank'))
                                 : isInvestment 
                                 ? `Partner Capital: ${transaction.partnerName || 'Partner'}`
                                 : isDeposit
@@ -3851,8 +4130,14 @@ const ReportsFinances = () => {
                                 : transaction.category}
                             </p>
                             {isTransfer && (
-                              <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-cyan-100 text-cyan-800">
-                                Contra Entry • Cash to Bank
+                              <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold ${
+                                isBankToCash
+                                  ? 'bg-blue-100 text-blue-800'
+                                  : 'bg-emerald-100 text-emerald-800'
+                              }`}>
+                                {isBankToCash
+                                  ? 'Contra Entry • Bank to Cash'
+                                  : 'Contra Entry • Cash to Bank'}
                               </span>
                             )}
                             {isInvestment && (
@@ -3885,9 +4170,11 @@ const ReportsFinances = () => {
                           <p className="text-xs text-gray-500 mt-0.5">
                             {formatDate(transaction.date)} • {transaction.category}
                             {isTransfer && (
-                              <span className="ml-2 text-cyan-800 font-medium">
-                                Cash in Hand ➔ {transaction.transferDetails?.bankName || 'Bank Account'}
-                                {transaction.transferDetails?.depositSlipNumber ? ` (Slip #${transaction.transferDetails.depositSlipNumber})` : ''}
+                              <span className={`ml-2 font-medium ${isBankToCash ? 'text-blue-800' : 'text-emerald-800'}`}>
+                                {isBankToCash
+                                  ? `${transaction.transferDetails?.bankName || 'Bank Account'} ➔ Cash Drawer (Petty Cash)`
+                                  : `Cash in Hand ➔ ${transaction.transferDetails?.bankName || 'Bank Account'}`}
+                                {transaction.transferDetails?.depositSlipNumber ? ` (Ref #${transaction.transferDetails.depositSlipNumber})` : ''}
                                 {transaction.transferDetails?.depositedBy ? ` • By: ${transaction.transferDetails.depositedBy}` : ''}
                               </span>
                             )}
@@ -5369,11 +5656,32 @@ const ReportsFinances = () => {
                   </table>
                 </div>
 
+                {/* 3. Security Deposits Paid (if any) */}
+                {rp.totalDepositPayments > 0 && (
+                  <div>
+                    <div className="text-xs font-bold text-teal-800 uppercase tracking-wider mb-1">C. Refundable Security Deposits</div>
+                    <table className="w-full text-sm">
+                      <tbody>
+                        {Object.entries(rp.depositPaymentsByCategory).map(([category, amount]) => (
+                          <tr key={category} className="border-b border-gray-100">
+                            <td className="py-1.5 text-gray-600">{category}</td>
+                            <td className="py-1.5 text-right font-medium text-gray-900">₹{amount.toFixed(2)}</td>
+                          </tr>
+                        ))}
+                        <tr className="font-semibold text-xs text-teal-950 bg-teal-50/50">
+                          <td className="py-1.5 px-2">Subtotal Security Deposits</td>
+                          <td className="py-1.5 px-2 text-right text-teal-700">₹{rp.totalDepositPayments.toFixed(2)}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
                 {/* Totals & Closing Balance */}
                 <table className="w-full text-sm mt-4">
                   <tbody>
                     <tr className="bg-gray-100 font-bold border-t">
-                      <td className="py-2 px-2 text-gray-900">Total Payments (A + B)</td>
+                      <td className="py-2 px-2 text-gray-900">Total External Payments (Outflows)</td>
                       <td className="py-2 px-2 text-right text-red-600">₹{rp.totalPayments.toFixed(2)}</td>
                     </tr>
                     <tr className="text-xs text-gray-600 bg-gray-50">
@@ -5384,15 +5692,45 @@ const ReportsFinances = () => {
                       <td className="py-1 px-2 pl-4">↳ Paid in Physical Cash</td>
                       <td className="py-1 px-2 text-right">₹{rp.cashPayments.toFixed(2)}</td>
                     </tr>
+                    {(rp.totalCashDepositedToBank > 0 || rp.totalCashWithdrawnFromBank > 0) && (
+                      <tr className="text-xs text-indigo-900 bg-indigo-50/70 border-b border-indigo-200">
+                        <td className="py-1.5 px-2 pl-4">
+                          <span className="font-semibold block text-indigo-950">Internal Contra Transfers (Zero P&L Impact):</span>
+                          {rp.totalCashDepositedToBank > 0 && <span className="block text-[11px] text-emerald-700">↳ Cash Deposited to Bank (Cash ➔ Bank): ₹{rp.totalCashDepositedToBank.toFixed(2)}</span>}
+                          {rp.totalCashWithdrawnFromBank > 0 && <span className="block text-[11px] text-blue-700">↳ Cash Withdrawn from Bank (Bank ➔ Cash): ₹{rp.totalCashWithdrawnFromBank.toFixed(2)}</span>}
+                        </td>
+                        <td className="py-1.5 px-2 text-right font-bold text-gray-500">±₹0.00</td>
+                      </tr>
+                    )}
                     <tr className="bg-blue-50/60 font-semibold border-t border-blue-200">
-                      <td className="py-2 px-2 text-blue-900 flex items-center gap-1.5">
-                        <Landmark className="h-4 w-4 text-blue-600 inline" /> Closing Bank Balance
+                      <td className="py-2 px-2 text-blue-900 flex items-center justify-between">
+                        <span className="flex items-center gap-1.5">
+                          <Landmark className="h-4 w-4 text-blue-600 inline" /> Closing Bank Balance
+                        </span>
+                        <button
+                          type="button"
+                          onClick={handleOpenCashWithdrawalModal}
+                          className="text-[11px] font-semibold text-blue-800 bg-blue-100 hover:bg-blue-200 px-2 py-0.5 rounded border border-blue-300 transition-colors"
+                          title="Withdraw cash from bank into physical cash drawer"
+                        >
+                          Withdraw to Cash
+                        </button>
                       </td>
                       <td className="py-2 px-2 text-right text-blue-700 font-bold">₹{rp.bankBalance.toFixed(2)}</td>
                     </tr>
                     <tr className="bg-emerald-50/60 font-semibold border-t border-emerald-200">
-                      <td className="py-2 px-2 text-emerald-900 flex items-center gap-1.5">
-                        <Banknote className="h-4 w-4 text-emerald-600 inline" /> Closing Cash in Hand Balance
+                      <td className="py-2 px-2 text-emerald-900 flex items-center justify-between">
+                        <span className="flex items-center gap-1.5">
+                          <Banknote className="h-4 w-4 text-emerald-600 inline" /> Closing Cash in Hand Balance
+                        </span>
+                        <button
+                          type="button"
+                          onClick={handleOpenCashDepositModal}
+                          className="text-[11px] font-semibold text-emerald-800 bg-emerald-100 hover:bg-emerald-200 px-2 py-0.5 rounded border border-emerald-300 transition-colors"
+                          title="Deposit cash in hand into bank account"
+                        >
+                          Deposit to Bank
+                        </button>
                       </td>
                       <td className="py-2 px-2 text-right text-emerald-700 font-bold">₹{rp.cashBalance.toFixed(2)}</td>
                     </tr>
@@ -5471,6 +5809,33 @@ const ReportsFinances = () => {
                 <td className="py-2 px-2 text-gray-700">Total Outflows (Bank & Cash)</td>
                 <td className="py-2 px-2 text-right text-red-600 font-semibold">(₹{cf.totalOutflows.toFixed(2)})</td>
               </tr>
+
+              {/* 3. Internal Contra Transfers (if any occurred this month) */}
+              {(cf.monthCashDepositedToBank > 0 || cf.monthCashWithdrawnFromBank > 0) && (
+                <>
+                  <tr>
+                    <td className="py-3 font-bold text-gray-800 uppercase text-xs" colSpan={2}>3. Internal Contra Transfers (Zero Net P&L Impact)</td>
+                  </tr>
+                  {cf.monthCashDepositedToBank > 0 && (
+                    <tr className="border-b text-xs text-emerald-800 bg-emerald-50/20">
+                      <td className="py-1.5 pl-4">
+                        Cash Deposited to Bank (Cash ➔ Bank)
+                        <span className="block text-[11px] text-gray-400">Transferred from Physical Cash into Operating Bank</span>
+                      </td>
+                      <td className="py-1.5 text-right font-medium text-emerald-700">₹{cf.monthCashDepositedToBank.toFixed(2)}</td>
+                    </tr>
+                  )}
+                  {cf.monthCashWithdrawnFromBank > 0 && (
+                    <tr className="border-b text-xs text-blue-800 bg-blue-50/20">
+                      <td className="py-1.5 pl-4">
+                        Cash Withdrawn from Bank (Bank ➔ Cash)
+                        <span className="block text-[11px] text-gray-400">Transferred from Operating Bank into Physical Cash</span>
+                      </td>
+                      <td className="py-1.5 text-right font-medium text-blue-700">₹{cf.monthCashWithdrawnFromBank.toFixed(2)}</td>
+                    </tr>
+                  )}
+                </>
+              )}
 
               {/* Net Flow Movement */}
               <tr className="bg-gray-100 font-bold border-t-2 border-gray-300">
@@ -5552,6 +5917,39 @@ const ReportsFinances = () => {
             } else {
               handleOpenAddForm('Expense');
             }
+          }}
+        />
+      )}
+
+      {/* TAB: STAFF SALARIES MANAGEMENT */}
+      {activeTab === 'salaries' && (
+        <StaffSalaryManager
+          salaries={salariesList}
+          accounts={accountsList}
+          onRefresh={loadData}
+          onToast={addToast}
+          onOpenNewLedgerModal={() => {
+            setCustomLedgerDefaultType('Expense');
+            setShowCustomLedgerModal(true);
+          }}
+        />
+      )}
+
+      {/* TAB: ACCRUALS & OUTSTANDING PAYABLES */}
+      {activeTab === 'accruals' && (
+        <AccrualManager
+          accruals={accrualsList}
+          accounts={accountsList}
+          customCategories={customCategoriesList}
+          onRefresh={loadData}
+          onToast={addToast}
+          onOpenNewCategoryModal={() => {
+            setCustomCategoryDefaultType('Expense');
+            setShowCustomCategoryModal(true);
+          }}
+          onOpenNewLedgerModal={() => {
+            setCustomLedgerDefaultType('Expense');
+            setShowCustomLedgerModal(true);
           }}
         />
       )}
@@ -5673,27 +6071,39 @@ const ReportsFinances = () => {
                   </div>
                 )}
 
-                {/* Cash to Bank Transfer Specific Fields */}
+                {/* Cash & Bank Contra Transfer Specific Fields */}
                 {editTxData.type === 'Transfer' && (
                   <div className="space-y-3 p-3.5 bg-cyan-50/70 rounded-xl border border-cyan-200">
                     <div className="flex items-center gap-2 text-xs font-bold text-cyan-900">
                       <ArrowRightLeft className="h-4 w-4 text-cyan-700" />
-                      <span>Contra Transfer: Cash in Hand (1010) ➔ Bank Account (1020)</span>
+                      <span>
+                        {isBankToCashTx(transactionToEdit) || editTxData.category === 'Cash Withdrawal from Bank'
+                          ? 'Contra Transfer: Bank Account (Account 1010) ➔ Cash Drawer (Account 1020)'
+                          : 'Contra Transfer: Cash Drawer (Account 1020) ➔ Bank Account (Account 1010)'}
+                      </span>
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <div>
-                        <label className="block text-xs font-semibold text-cyan-950">Destination Bank Account *</label>
+                        <label className="block text-xs font-semibold text-cyan-950">
+                          {isBankToCashTx(transactionToEdit) || editTxData.category === 'Cash Withdrawal from Bank'
+                            ? 'Source Bank Account *'
+                            : 'Destination Bank Account *'}
+                        </label>
                         <input
                           type="text"
                           required
                           value={editTxData.bankName}
                           onChange={e => setEditTxData({ ...editTxData, bankName: e.target.value })}
-                          placeholder="e.g. Primary Bank Account (Account #1020)"
+                          placeholder="e.g. Primary Bank Account (Account #1010)"
                           className="mt-1 block w-full rounded-md border-gray-300 py-1.5 px-3 shadow-sm focus:border-cyan-500 focus:ring-cyan-500 sm:text-sm border bg-white"
                         />
                       </div>
                       <div>
-                        <label className="block text-xs font-semibold text-cyan-950">Deposit Slip / Reference #</label>
+                        <label className="block text-xs font-semibold text-cyan-950">
+                          {isBankToCashTx(transactionToEdit) || editTxData.category === 'Cash Withdrawal from Bank'
+                            ? 'Cheque # / ATM Slip / Ref #'
+                            : 'Deposit Slip / Reference #'}
+                        </label>
                         <input
                           type="text"
                           value={editTxData.depositSlipNumber}
@@ -5704,7 +6114,11 @@ const ReportsFinances = () => {
                       </div>
                     </div>
                     <div>
-                      <label className="block text-xs font-semibold text-cyan-950">Deposited By (Staff / Manager Name)</label>
+                      <label className="block text-xs font-semibold text-cyan-950">
+                        {isBankToCashTx(transactionToEdit) || editTxData.category === 'Cash Withdrawal from Bank'
+                          ? 'Withdrawn By (Staff / Manager Name)'
+                          : 'Deposited By (Staff / Manager Name)'}
+                      </label>
                       <input
                         type="text"
                         value={editTxData.depositedBy}
@@ -5896,41 +6310,51 @@ const ReportsFinances = () => {
                 {/* Category & Payment Mode */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-xs font-semibold text-gray-700">
-                      {editTxData.type === 'Asset'
-                        ? 'Asset Category'
-                        : editTxData.type === 'Deposit'
-                        ? 'Deposit Category'
-                        : editTxData.type === 'Investment'
-                        ? 'Investment Purpose'
-                        : editTxData.type === 'Income'
-                        ? 'Income Category'
-                        : 'Expense Category'} *
-                    </label>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-xs font-semibold text-gray-700">
+                        {editTxData.type === 'Asset'
+                          ? 'Asset Category'
+                          : editTxData.type === 'Deposit'
+                          ? 'Deposit Category'
+                          : editTxData.type === 'Investment'
+                          ? 'Investment Purpose'
+                          : editTxData.type === 'Income'
+                          ? 'Income Category'
+                          : 'Expense Category'} *
+                      </label>
+                      {(editTxData.type === 'Expense' || editTxData.type === 'Income') && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCustomCategoryDefaultType(editTxData.type === 'Income' ? 'Income' : 'Expense');
+                            setShowCustomCategoryModal(true);
+                          }}
+                          className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800"
+                        >
+                          + New Category
+                        </button>
+                      )}
+                    </div>
                     <select
+                      required
                       value={editTxData.category}
                       onChange={e => setEditTxData({ ...editTxData, category: e.target.value })}
-                      className="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border"
+                      className="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border bg-white"
                     >
-                      {editTxData.type === 'Income'
-                        ? INCOME_CATEGORIES.map(cat => (
-                            <option key={cat} value={cat}>{cat}</option>
-                          ))
+                      {(editTxData.type === 'Income'
+                        ? Array.from(new Set([...INCOME_CATEGORIES, ...customCategoriesList.filter(c => c.type === 'Income').map(c => c.name)]))
                         : editTxData.type === 'Asset'
-                        ? ASSET_CATEGORIES.map(cat => (
-                            <option key={cat} value={cat}>{cat}</option>
-                          ))
+                        ? ASSET_CATEGORIES
                         : editTxData.type === 'Deposit'
-                        ? SECURITY_DEPOSIT_CATEGORIES.map(cat => (
-                            <option key={cat} value={cat}>{cat}</option>
-                          ))
+                        ? SECURITY_DEPOSIT_CATEGORIES
                         : editTxData.type === 'Investment'
-                        ? PARTNER_INVESTMENT_CATEGORIES.map(cat => (
-                            <option key={cat} value={cat}>{cat}</option>
-                          ))
-                        : EXPENSE_CATEGORIES.map(cat => (
-                            <option key={cat} value={cat}>{cat}</option>
-                          ))}
+                        ? PARTNER_INVESTMENT_CATEGORIES
+                        : editTxData.type === 'Transfer'
+                        ? ['Cash Deposit to Bank', 'Cash Withdrawal from Bank']
+                        : Array.from(new Set([...EXPENSE_CATEGORIES, ...customCategoriesList.filter(c => c.type === 'Expense').map(c => c.name)]))
+                      ).map(cat => (
+                        <option key={cat} value={cat}>{cat}</option>
+                      ))}
                     </select>
                   </div>
 
@@ -6383,6 +6807,242 @@ const ReportsFinances = () => {
         </div>
       )}
 
+      {/* CASH WITHDRAWAL FROM BANK (CONTRA ENTRY) MODAL */}
+      {showCashWithdrawalModal && (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+          <div className="flex min-h-screen items-center justify-center p-4 text-center">
+            <div 
+              className="fixed inset-0 transition-opacity" 
+              aria-hidden="true" 
+              onClick={() => !isWithdrawingCash && setShowCashWithdrawalModal(false)}
+            >
+              <div className="absolute inset-0 bg-gray-900 opacity-60"></div>
+            </div>
+
+            <div className="relative z-10 w-full max-w-lg transform overflow-hidden rounded-2xl bg-white text-left shadow-2xl transition-all border border-blue-100">
+              <div className="bg-gradient-to-r from-blue-700 via-indigo-700 to-blue-800 px-6 py-4 flex items-center justify-between text-white">
+                <div className="flex items-center space-x-2.5">
+                  <div className="p-2 bg-white/15 rounded-lg backdrop-blur-xs">
+                    <ArrowRightLeft className="h-5 w-5 text-white" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-bold tracking-tight">Withdraw Cash from Bank</h3>
+                    <p className="text-xs text-blue-100">
+                      Contra Entry: Transfers funds from Bank (1010) to Cash Drawer (1020) without impacting P&L
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => !isWithdrawingCash && setShowCashWithdrawalModal(false)}
+                  className="text-white/80 hover:text-white p-1 rounded-md hover:bg-white/10 transition-colors"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              <form onSubmit={handleCashWithdrawalSubmit} className="p-6 space-y-4">
+                {/* Liquidity summary banner */}
+                <div className="bg-blue-50/80 rounded-xl p-3.5 border border-blue-200">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="text-xs font-bold text-blue-900 uppercase tracking-wider block">
+                        Source Bank Balance
+                      </span>
+                      <span className="text-xl font-extrabold text-blue-900 font-mono tabular-nums">
+                        ₹{rp.bankBalance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-xs font-bold text-emerald-900 uppercase tracking-wider block">
+                        Current Cash in Hand
+                      </span>
+                      <span className="text-xl font-extrabold text-emerald-900 font-mono tabular-nums">
+                        ₹{rp.cashBalance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center flex-wrap gap-1.5 mt-2.5 pt-2 border-t border-blue-200/70">
+                    <span className="text-[11px] text-blue-800 font-semibold mr-1">Quick Select:</span>
+                    <button
+                      type="button"
+                      onClick={() => setCashWithdrawalFormData(prev => ({ ...prev, amount: '5000' }))}
+                      className="px-2 py-0.5 text-[11px] font-bold text-blue-800 bg-white hover:bg-blue-100 rounded border border-blue-300 transition-colors"
+                    >
+                      ₹5,000
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCashWithdrawalFormData(prev => ({ ...prev, amount: '10000' }))}
+                      className="px-2 py-0.5 text-[11px] font-bold text-blue-800 bg-white hover:bg-blue-100 rounded border border-blue-300 transition-colors"
+                    >
+                      ₹10,000
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCashWithdrawalFormData(prev => ({ ...prev, amount: '25000' }))}
+                      className="px-2 py-0.5 text-[11px] font-bold text-blue-800 bg-white hover:bg-blue-100 rounded border border-blue-300 transition-colors"
+                    >
+                      ₹25,000
+                    </button>
+                    {rp.bankBalance > 0 && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => setCashWithdrawalFormData(prev => ({ ...prev, amount: (Math.round(rp.bankBalance / 2)).toString() }))}
+                          className="px-2 py-0.5 text-[11px] font-bold text-blue-800 bg-white hover:bg-blue-100 rounded border border-blue-300 transition-colors"
+                        >
+                          50% Bank
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setCashWithdrawalFormData(prev => ({ ...prev, amount: rp.bankBalance.toString() }))}
+                          className="px-2 py-0.5 text-[11px] font-bold text-blue-800 bg-white hover:bg-blue-100 rounded border border-blue-300 transition-colors"
+                        >
+                          All Bank Funds
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {/* Transfer Date */}
+                <div>
+                  <div className="flex items-center justify-between">
+                    <label className="block text-xs font-semibold text-gray-700">Withdrawal Date *</label>
+                    {cashWithdrawalFormData.date && (
+                      <span className="text-[11px] font-mono text-blue-800 font-bold bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
+                        {formatDate(cashWithdrawalFormData.date)}
+                      </span>
+                    )}
+                  </div>
+                  <input
+                    type="date"
+                    required
+                    value={cashWithdrawalFormData.date}
+                    onChange={e => setCashWithdrawalFormData({ ...cashWithdrawalFormData, date: e.target.value })}
+                    className="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm border"
+                  />
+                </div>
+
+                {/* Amount to Withdraw */}
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700">
+                    Withdrawal Amount (₹) *
+                  </label>
+                  <div className="relative mt-1 rounded-md shadow-sm">
+                    <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+                      <span className="text-gray-500 sm:text-sm">₹</span>
+                    </div>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      required
+                      placeholder="0.00"
+                      value={cashWithdrawalFormData.amount}
+                      onChange={e => setCashWithdrawalFormData({ ...cashWithdrawalFormData, amount: e.target.value })}
+                      className="block w-full rounded-md border-gray-300 pl-7 pr-3 py-2 focus:border-blue-500 focus:ring-blue-500 sm:text-sm border font-mono font-bold text-gray-900"
+                    />
+                  </div>
+                  {parseFloat(cashWithdrawalFormData.amount) > rp.bankBalance && rp.bankBalance > 0 && (
+                    <p className="text-[11px] text-amber-700 font-medium mt-1">
+                      ⚠️ Note: Withdrawal amount exceeds current bank balance (₹{rp.bankBalance.toLocaleString('en-IN')}).
+                    </p>
+                  )}
+                </div>
+
+                {/* Source Bank Account */}
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700">
+                    Source Bank Account *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Primary Business Bank Account (Account #1010), State Bank of India"
+                    value={cashWithdrawalFormData.bankName}
+                    onChange={e => setCashWithdrawalFormData({ ...cashWithdrawalFormData, bankName: e.target.value })}
+                    className="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm border"
+                  />
+                </div>
+
+                {/* Cheque / ATM Ref and Withdrawn By */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700">
+                      Cheque # / ATM Slip / Ref #
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. CHQ-88201 or ATM-0921"
+                      value={cashWithdrawalFormData.referenceNumber}
+                      onChange={e => setCashWithdrawalFormData({ ...cashWithdrawalFormData, referenceNumber: e.target.value })}
+                      className="mt-1 block w-full rounded-md border-gray-300 py-1.5 px-3 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm border font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700">
+                      Withdrawn By (Staff Name)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Centre Admin / Custodian"
+                      value={cashWithdrawalFormData.withdrawnBy}
+                      onChange={e => setCashWithdrawalFormData({ ...cashWithdrawalFormData, withdrawnBy: e.target.value })}
+                      className="mt-1 block w-full rounded-md border-gray-300 py-1.5 px-3 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm border"
+                    />
+                  </div>
+                </div>
+
+                {/* Description / Notes */}
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700">
+                    Narration / Purpose
+                  </label>
+                  <textarea
+                    rows={2}
+                    placeholder="e.g. Cash withdrawn from bank to replenish physical cash drawer for centre operations"
+                    value={cashWithdrawalFormData.description}
+                    onChange={e => setCashWithdrawalFormData({ ...cashWithdrawalFormData, description: e.target.value })}
+                    className="mt-1 block w-full rounded-md border-gray-300 py-1.5 px-3 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm border text-xs"
+                  />
+                </div>
+
+                <div className="flex items-center justify-end space-x-3 pt-3 border-t border-gray-100">
+                  <button
+                    type="button"
+                    disabled={isWithdrawingCash}
+                    onClick={() => setShowCashWithdrawalModal(false)}
+                    className="px-4 py-2 text-xs font-semibold text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isWithdrawingCash}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-blue-700 hover:bg-blue-800 rounded-lg shadow-sm transition-colors disabled:opacity-50"
+                  >
+                    {isWithdrawingCash ? (
+                      <>
+                        <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin mr-1" />
+                        Recording Withdrawal...
+                      </>
+                    ) : (
+                      <>
+                        <ArrowRightLeft className="w-3.5 h-3.5" />
+                        Confirm Cash Withdrawal
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* STANDARDIZED DELETE CONFIRMATION MODAL */}
       <DeleteConfirmModal
         isOpen={!!transactionToDelete}
@@ -6412,6 +7072,31 @@ const ReportsFinances = () => {
           setSelectedVoucherTx(updatedTx);
           loadData();
           addToast('success', 'Voucher details updated and saved to ledger');
+        }}
+      />
+
+      {/* CUSTOM ACCOUNTING CATEGORY MODAL */}
+      <CustomCategoryModal
+        isOpen={showCustomCategoryModal}
+        onClose={() => setShowCustomCategoryModal(false)}
+        defaultType={customCategoryDefaultType}
+        accounts={accountsList}
+        onCategoryAdded={(newCat) => {
+          setCustomCategoriesList(prev => [...prev.filter(c => c.name.toLowerCase() !== newCat.name.toLowerCase()), newCat]);
+          addToast('success', `Custom category "${newCat.name}" added successfully.`);
+        }}
+      />
+
+      {/* CUSTOM GENERAL LEDGER HEAD MODAL */}
+      <CustomLedgerModal
+        isOpen={showCustomLedgerModal}
+        onClose={() => setShowCustomLedgerModal(false)}
+        existingAccounts={accountsList}
+        defaultType={customLedgerDefaultType}
+        onAccountAdded={(newAcc) => {
+          setAccountsList(prev => [...prev, newAcc].sort((a, b) => a.code.localeCompare(b.code)));
+          addToast('success', `General ledger account ${newAcc.code} - ${newAcc.name} created.`);
+          loadAccounts();
         }}
       />
 

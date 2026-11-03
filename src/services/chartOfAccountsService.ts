@@ -2,6 +2,16 @@ import { collection, doc, getDocs, setDoc, updateDoc, addDoc, deleteDoc, query, 
 import { db } from '../firebase';
 import { ChartOfAccountItem, FinanceTransaction, Fee } from '../types';
 import { logActivity, removeUndefinedFields } from './api';
+import {
+  isCashToBankTx,
+  isBankToCashTx,
+  isTransferTx,
+  isDepositTx,
+  isInvestmentTx,
+  isAssetTx,
+  isExpenseTx,
+  isIncomeTx
+} from './ledgerService';
 
 export const DEFAULT_CHART_OF_ACCOUNTS: Omit<ChartOfAccountItem, 'id'>[] = [
   // 1000 - ASSETS
@@ -364,39 +374,85 @@ export const DEFAULT_CHART_OF_ACCOUNTS: Omit<ChartOfAccountItem, 'id'>[] = [
 const STORAGE_KEY = 'little_buds_chart_of_accounts_v1';
 
 export const getChartOfAccounts = async (): Promise<ChartOfAccountItem[]> => {
-  try {
-    const q = query(collection(db, 'chartOfAccounts'), orderBy('code', 'asc'));
-    const snapshot = await getDocs(q);
-    if (!snapshot.empty) {
-      const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ChartOfAccountItem));
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
-      return items;
-    }
-  } catch (error) {
-    console.warn('Firestore chartOfAccounts fetch fallback:', error);
-  }
+  // Map keyed by account code to guarantee all 32 default system accounts are ALWAYS present
+  const accountMap = new Map<string, ChartOfAccountItem>();
 
-  // Fallback to local storage or defaults
+  // 1. Initialize with all authoritative default system accounts
+  DEFAULT_CHART_OF_ACCOUNTS.forEach((acc, index) => {
+    accountMap.set(acc.code, {
+      ...acc,
+      id: `default-${acc.code}-${index}`,
+      createdAt: '2025-01-01T00:00:00.000Z'
+    });
+  });
+
+  // 2. Read local cache to retain custom accounts & custom edits
   try {
     const cached = localStorage.getItem(STORAGE_KEY);
     if (cached) {
       const parsed = JSON.parse(cached);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed;
+        parsed.forEach((item: ChartOfAccountItem) => {
+          if (item && item.code) {
+            const existing = accountMap.get(item.code);
+            accountMap.set(item.code, {
+              ...(existing || {}),
+              ...item
+            });
+          }
+        });
       }
     }
-  } catch {
-    // Ignore error
+  } catch (err) {
+    console.warn('Local chart of accounts parse error:', err);
   }
 
-  // Seed default accounts in memory
-  const defaultItems: ChartOfAccountItem[] = DEFAULT_CHART_OF_ACCOUNTS.map((acc, index) => ({
-    ...acc,
-    id: `default-${acc.code}-${index}`,
-    createdAt: new Date().toISOString()
-  }));
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(defaultItems));
-  return defaultItems;
+  // 3. Query Firestore to sync across devices / sessions
+  try {
+    const q = query(collection(db, 'chartOfAccounts'), orderBy('code', 'asc'));
+    const snapshot = await getDocs(q);
+    if (!snapshot.empty) {
+      snapshot.docs.forEach(docSnap => {
+        const data = docSnap.data() as Partial<ChartOfAccountItem>;
+        if (data && data.code) {
+          const existing = accountMap.get(data.code);
+          accountMap.set(data.code, {
+            ...(existing || {}),
+            id: docSnap.id,
+            ...data
+          } as ChartOfAccountItem);
+        }
+      });
+    }
+  } catch (error) {
+    console.warn('Firestore chartOfAccounts fetch fallback:', error);
+  }
+
+  // 4. Ensure all DEFAULT_CHART_OF_ACCOUNTS maintain their isSystem flag and core properties
+  DEFAULT_CHART_OF_ACCOUNTS.forEach((defaultAcc, index) => {
+    const current = accountMap.get(defaultAcc.code);
+    if (!current) {
+      accountMap.set(defaultAcc.code, {
+        ...defaultAcc,
+        id: `default-${defaultAcc.code}-${index}`,
+        createdAt: '2025-01-01T00:00:00.000Z'
+      });
+    } else {
+      accountMap.set(defaultAcc.code, {
+        ...defaultAcc,
+        ...current,
+        isSystem: true
+      });
+    }
+  });
+
+  const merged = Array.from(accountMap.values()).sort((a, b) => a.code.localeCompare(b.code));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+  } catch {
+    // Ignore storage quota error
+  }
+  return merged;
 };
 
 export const addChartOfAccount = async (account: Omit<ChartOfAccountItem, 'id'>): Promise<string> => {
@@ -494,12 +550,8 @@ export const calculateAccountLedgerBalances = (
     result['1200'].entryCount = fees.filter(f => f.status !== 'Paid').length;
   }
 
-  // 1300 - Security Deposits Paid (Current Asset)
-  const depositTransactions = transactions.filter(t => 
-    t.type === 'Deposit' || 
-    t.purchaseType === 'Deposit' || 
-    (t.category && t.category.toLowerCase().includes('deposit'))
-  );
+  // 1300 - Security Deposits Paid (Current Asset - strictly excludes cash deposits to bank)
+  const depositTransactions = transactions.filter(isDepositTx);
   const totalSecurityDeposits = depositTransactions.reduce((acc, t) => acc + (t.amount || 0), 0);
   if (result['1300']) {
     result['1300'].balance = totalSecurityDeposits;
@@ -507,15 +559,8 @@ export const calculateAccountLedgerBalances = (
     result['1300'].entryCount = depositTransactions.length;
   }
 
-  // Fixed Assets: 1510, 1520, 1530, 1540, 1550 (excluding Security Deposits & Investments)
-  const isDepositTx = (t: FinanceTransaction) => 
-    t.type === 'Deposit' || t.purchaseType === 'Deposit' || (t.category && t.category.toLowerCase().includes('deposit'));
-  const isInvestmentTx = (t: FinanceTransaction) => 
-    t.type === 'Investment' || t.purchaseType === 'Investment' || (t.category && t.category.toLowerCase().includes('partner capital'));
-
-  const assetTransactions = transactions.filter(t => 
-    (t.type === 'Asset' || t.purchaseType === 'Asset') && !isDepositTx(t) && !isInvestmentTx(t)
-  );
+  // Fixed Assets: 1510, 1520, 1530, 1540, 1550 (strictly capital assets)
+  const assetTransactions = transactions.filter(isAssetTx);
   
   const assetCategoryToCode: Record<string, string> = {
     'Therapy & Sensory Equipment': '1510',
@@ -543,7 +588,7 @@ export const calculateAccountLedgerBalances = (
   }
 
   // 3010 - Partner Capital
-  const partnerTransactions = transactions.filter(t => t.type === 'Investment' || t.purchaseType === 'Investment');
+  const partnerTransactions = transactions.filter(isInvestmentTx);
   const totalPartnerCapital = partnerTransactions.reduce((acc, t) => acc + t.amount, 0);
   if (result['3010']) {
     result['3010'].balance = totalPartnerCapital;
@@ -572,7 +617,7 @@ export const calculateAccountLedgerBalances = (
   });
 
   // Other incomes
-  const incomeTransactions = transactions.filter(t => t.type === 'Income');
+  const incomeTransactions = transactions.filter(isIncomeTx);
   incomeTransactions.forEach(tx => {
     if (result['4090']) {
       result['4090'].balance += tx.amount;
@@ -581,24 +626,57 @@ export const calculateAccountLedgerBalances = (
     }
   });
 
-  // 5000 Expenses: map transactions
-  const expenseTransactions = transactions.filter(t => t.type === 'Expense' && t.purchaseType !== 'Asset' && t.purchaseType !== 'Investment');
+  // 2010 - Accounts Payable (Accrued Liabilities)
+  const accrualTxs = transactions.filter(t => t.purchaseType === 'Accrual');
+  const settlementTxs = transactions.filter(t => t.purchaseType === 'AccrualSettlement');
+  const totalAccrued = accrualTxs.reduce((sum, t) => sum + (t.amount || 0), 0);
+  const totalSettled = settlementTxs.reduce((sum, t) => sum + (t.amount || 0), 0);
+  const outstandingPayables = Math.max(0, totalAccrued - totalSettled);
+
+  if (result['2010']) {
+    result['2010'].balance = outstandingPayables;
+    result['2010'].creditTotal = totalAccrued;
+    result['2010'].debitTotal = totalSettled;
+    result['2010'].entryCount = accrualTxs.length + settlementTxs.length;
+  }
+
+  // 2030 - Accrued Staff Salaries
+  const salaryTxsWithDue = transactions.filter(t => t.purchaseType === 'Salary' && t.salaryDetails?.balanceDue && t.salaryDetails.balanceDue > 0);
+  const outstandingSalaries = salaryTxsWithDue.reduce((sum, t) => sum + (t.salaryDetails?.balanceDue || 0), 0);
+  if (result['2030']) {
+    result['2030'].balance = outstandingSalaries;
+    result['2030'].creditTotal = outstandingSalaries;
+    result['2030'].entryCount = salaryTxsWithDue.length;
+  }
+
+  // 5000 Expenses: map transactions (strictly excludes contra transfers, cash deposits, cash withdrawals)
+  const expenseTransactions = transactions.filter(isExpenseTx);
   
   const expenseCategoryToCode: Record<string, string> = {
     'Salaries': '5010',
+    'Salaries & Staff Welfare': '5010',
     'Rent': '5020',
+    'Rent & Premises': '5020',
     'Utilities': '5030',
+    'Utilities & Electricity': '5030',
     'Supplies': '5040',
+    'Learning Consumables, Toys & Craft Materials': '5040',
     'Food & Snacks': '5050',
+    'Food, Snacks & Child Nutrition': '5050',
     'Maintenance': '5060',
+    'Repairs & Maintenance': '5060',
+    'Cleaning & Hygiene': '5060',
     'Marketing': '5070',
+    'Marketing & Outreach': '5070',
     'Software': '5080',
+    'Software & Subscriptions': '5080',
     'Training': '5090',
+    'Staff Welfare & Training': '5090',
     'Bank Charges': '5100'
   };
 
   expenseTransactions.forEach(tx => {
-    const code = expenseCategoryToCode[tx.category] || '5040';
+    const code = tx.ledgerAccountCode || expenseCategoryToCode[tx.category] || (tx.purchaseType === 'Salary' ? '5010' : '5040');
     if (result[code]) {
       result[code].balance += tx.amount;
       result[code].debitTotal += tx.amount;
@@ -612,6 +690,28 @@ export const calculateAccountLedgerBalances = (
     result['5120'].debitTotal = liquidStats.depreciationTotal;
     result['5120'].entryCount = assetTransactions.length;
   }
+
+  // Custom User Accounts (Any non-standard codes, strictly excluding contra transfers)
+  accounts.forEach(acc => {
+    if (acc.code === '1010' || acc.code === '1020') return;
+    if (!result[acc.code] || result[acc.code].entryCount === 0) {
+      const matchingTxs = transactions.filter(t => !isTransferTx(t) && t.ledgerAccountCode === acc.code);
+      if (matchingTxs.length > 0) {
+        const total = matchingTxs.reduce((sum, t) => sum + (t.amount || 0), 0);
+        if (!result[acc.code]) {
+          result[acc.code] = { balance: total, debitTotal: 0, creditTotal: 0, entryCount: matchingTxs.length };
+        } else {
+          result[acc.code].balance = total;
+          result[acc.code].entryCount = matchingTxs.length;
+        }
+        if (acc.normalBalance === 'Debit') {
+          result[acc.code].debitTotal = total;
+        } else {
+          result[acc.code].creditTotal = total;
+        }
+      }
+    }
+  });
 
   // 3030 - Current Surplus (Revenues - Expenses)
   const totalRev = (result['4010']?.balance || 0) + (result['4020']?.balance || 0) + (result['4030']?.balance || 0) + (result['4090']?.balance || 0);
