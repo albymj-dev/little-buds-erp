@@ -33,6 +33,18 @@ import { useTypography } from '../contexts/TypographyContext';
 import { StyledWordText } from './StyledWordText';
 import { formatDate } from '../utils/dateUtils';
 import {
+  EXCEL_COLORS,
+  NUMBER_FORMATS,
+  BORDERS,
+  addExecutiveReportHeader,
+  styleHeaderRow,
+  styleDataRow,
+  styleSectionHeaderRow,
+  styleTotalRow,
+  autoFitWorksheetColumns,
+  setupSheetViews
+} from '../utils/excelFormatters';
+import {
   isCashToBankTx,
   isBankToCashTx,
   isTransferTx,
@@ -40,7 +52,9 @@ import {
   isInvestmentTx,
   isAssetTx,
   isExpenseTx,
-  isIncomeTx
+  isIncomeTx,
+  calculateAssetDepreciationBreakdown,
+  getIndianFYInfo
 } from '../services/ledgerService';
 
 const COLORS = ['#4f46e5', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
@@ -66,6 +80,12 @@ const EXPENSE_CATEGORIES = [
   'Software & Subscriptions',
   'Cleaning & Hygiene',
   'Marketing & Outreach',
+  'Taxi & General Conveyance',
+  'Documentation & Registration',
+  'Canteen Expenses',
+  'Mobile & Internet Expenses',
+  'Stationary Expenses',
+  'Refreshment Expenses',
   'Other Operational Expense'
 ];
 
@@ -170,6 +190,11 @@ const ReportsFinances = () => {
   const [pnlPeriod, setPnlPeriod] = useState<'this_month' | 'last_month' | 'this_quarter' | 'ytd' | 'all_time' | 'custom'>('this_month');
   const [pnlCustomStart, setPnlCustomStart] = useState(format(startOfMonth(new Date()), 'yyyy-MM-dd'));
   const [pnlCustomEnd, setPnlCustomEnd] = useState(format(new Date(), 'yyyy-MM-dd'));
+
+  // Balance Sheet Period Filter (Same options and structure as P&L)
+  const [bsPeriod, setBsPeriod] = useState<'this_month' | 'last_month' | 'this_quarter' | 'ytd' | 'all_time' | 'custom'>('this_month');
+  const [bsCustomStart, setBsCustomStart] = useState(format(startOfMonth(new Date()), 'yyyy-MM-dd'));
+  const [bsCustomEnd, setBsCustomEnd] = useState(format(new Date(), 'yyyy-MM-dd'));
 
   // Partner filter and search in Partners tab
   const [partnerFilter, setPartnerFilter] = useState<string>('ALL');
@@ -995,7 +1020,7 @@ const ReportsFinances = () => {
   };
 
   // 5. Receipts and Payments Account (All Time)
-  const processReceiptsAndPayments = () => {
+  const processReceiptsAndPayments = (cutoffDate?: string) => {
     let totalReceipts = 0;
     let bankReceipts = 0;
     let cashReceipts = 0;
@@ -1028,6 +1053,9 @@ const ReportsFinances = () => {
     const depositPaymentsByCategory: Record<string, number> = {};
 
     fees.forEach(f => {
+      const feeDate = f.dueDate || (f.createdAt ? f.createdAt.split('T')[0] : '');
+      if (cutoffDate && feeDate && feeDate > cutoffDate) return;
+
       const paid = safeNum(f.amountPaid);
       if (paid > 0) {
         receiptsByCategory['Tuition Fees'] += paid;
@@ -1043,6 +1071,7 @@ const ReportsFinances = () => {
     });
 
     transactions.forEach(t => {
+      if (cutoffDate && t.date && t.date > cutoffDate) return;
       const amt = safeNum(t.amount);
       const isCash = isCashPaymentMode(t.paymentMode);
 
@@ -1302,11 +1331,54 @@ const ReportsFinances = () => {
 
   // 7. Balance Sheet with Asset Details (Current Financial Position)
   const processBalanceSheet = () => {
-    const rp = processReceiptsAndPayments();
+    const now = new Date();
+    let startDate: string;
+    let endDate: string;
+    let periodLabel: string;
+    let asOfDate: string;
+
+    if (bsPeriod === 'this_month') {
+      startDate = format(startOfMonth(now), 'yyyy-MM-dd');
+      endDate = format(endOfMonth(now), 'yyyy-MM-dd');
+      asOfDate = endDate > format(now, 'yyyy-MM-dd') ? format(now, 'yyyy-MM-dd') : endDate;
+      periodLabel = `This Month (${format(now, 'MMMM yyyy')})`;
+    } else if (bsPeriod === 'last_month') {
+      const last = subMonths(now, 1);
+      startDate = format(startOfMonth(last), 'yyyy-MM-dd');
+      endDate = format(endOfMonth(last), 'yyyy-MM-dd');
+      asOfDate = endDate;
+      periodLabel = `Last Month (${format(last, 'MMMM yyyy')})`;
+    } else if (bsPeriod === 'this_quarter') {
+      const fyInfo = getIndianFYInfo(now);
+      startDate = fyInfo.quarterStartDate;
+      endDate = fyInfo.quarterEndDate > format(now, 'yyyy-MM-dd') ? format(now, 'yyyy-MM-dd') : fyInfo.quarterEndDate;
+      asOfDate = endDate;
+      periodLabel = `${fyInfo.quarterLabel} (Indian FY)`;
+    } else if (bsPeriod === 'ytd') {
+      const fyInfo = getIndianFYInfo(now);
+      startDate = fyInfo.fyStartDate;
+      endDate = fyInfo.fyEndDate;
+      asOfDate = endDate;
+      periodLabel = `${fyInfo.fyLabel} (Cumulative: Apr ${fyInfo.fyStartYear} - Mar ${fyInfo.fyEndYear})`;
+    } else if (bsPeriod === 'custom') {
+      startDate = bsCustomStart || format(startOfMonth(now), 'yyyy-MM-dd');
+      endDate = bsCustomEnd || format(now, 'yyyy-MM-dd');
+      asOfDate = endDate;
+      periodLabel = `${formatDate(startDate)} to ${formatDate(endDate)}`;
+    } else {
+      startDate = '2000-01-01';
+      endDate = '2099-12-31';
+      asOfDate = format(now, 'yyyy-MM-dd');
+      periodLabel = `All Time Historical (As of ${formatDate(now)})`;
+    }
+
+    const rp = processReceiptsAndPayments(endDate);
     
-    // Accounts Receivable from pending fees
+    // Accounts Receivable from pending fees up to endDate
     let accountsReceivable = 0;
     fees.forEach(f => {
+      const feeDate = f.dueDate || (f.createdAt ? f.createdAt.split('T')[0] : '');
+      if (feeDate && feeDate > endDate) return;
       if (safeNum(f.amount) > safeNum(f.amountPaid)) {
         accountsReceivable += (safeNum(f.amount) - safeNum(f.amountPaid));
       }
@@ -1316,8 +1388,8 @@ const ReportsFinances = () => {
     const cashBalance = rp.cashBalance;
     const cashAndBank = rp.closingBalance;
 
-    // Security Deposits Paid (Refundable Current Assets)
-    const depositTransactions = transactions.filter(isDepositTx);
+    // Security Deposits Paid (Refundable Current Assets) up to endDate
+    const depositTransactions = transactions.filter(t => isDepositTx(t) && (!t.date || t.date <= endDate));
     let totalSecurityDeposits = 0;
     const depositsByCategory: Record<string, { total: number; count: number; items: FinanceTransaction[] }> = {};
 
@@ -1336,8 +1408,8 @@ const ReportsFinances = () => {
     // Total Current Assets includes Bank, Cash, Fee Receivables AND Security Deposits!
     const currentAssets = cashAndBank + accountsReceivable + totalSecurityDeposits;
 
-    // Fixed Assets (Capital Assets)
-    const assetTransactions = transactions.filter(isAssetTx);
+    // Fixed Assets (Capital Assets) up to endDate
+    const assetTransactions = transactions.filter(t => isAssetTx(t) && (!t.date || t.date <= endDate));
     let totalFixedAssets = 0;
     const assetsByCategory: Record<string, { total: number; count: number; items: FinanceTransaction[] }> = {};
 
@@ -1353,8 +1425,8 @@ const ReportsFinances = () => {
       assetsByCategory[cat].items.push(t);
     });
 
-    // Partner Capital contributions calculation
-    const partnerInvestments = transactions.filter(isInvestmentTx);
+    // Partner Capital contributions calculation up to endDate
+    const partnerInvestments = transactions.filter(t => isInvestmentTx(t) && (!t.date || t.date <= endDate));
     let totalPartnerCapital = 0;
     const partnerCapitalByName: Record<string, { total: number; count: number; lastDate: string }> = {};
 
@@ -1372,16 +1444,44 @@ const ReportsFinances = () => {
       }
     });
 
-    const totalAssets = currentAssets + totalFixedAssets;
+    const asOfDepDate = new Date(endDate > format(now, 'yyyy-MM-dd') && bsPeriod !== 'ytd' ? format(now, 'yyyy-MM-dd') : endDate);
+    const depBreakdown = calculateAssetDepreciationBreakdown(assetTransactions, isNaN(asOfDepDate.getTime()) ? new Date() : asOfDepDate);
+    const totalAccumulatedDepreciation = depBreakdown.totalAccumulatedDepreciation;
+    const currentFYDepreciationYTD = depBreakdown.currentFYDepreciationYTD;
+    const netFixedAssets = Math.max(0, totalFixedAssets - totalAccumulatedDepreciation);
+
+    // Total Assets = Current Assets + Net Fixed Assets (Cost less Accumulated Depreciation)
+    const totalAssets = currentAssets + netFixedAssets;
     
-    // Current Liabilities from pending Accruals (2010) and Accrued Staff Salaries (2030)
-    const accountsPayable = accrualsList.filter(a => a.status !== 'Settled').reduce((sum, a) => sum + (a.balanceDue || 0), 0);
-    const accruedSalaries = salariesList.filter(s => s.status !== 'Paid' && s.status !== 'Advance').reduce((sum, s) => sum + (s.balanceDue || 0), 0);
+    // Current Liabilities from pending Accruals (2010) and Accrued Staff Salaries (2030) up to endDate
+    const accountsPayable = accrualsList
+      .filter(a => {
+        const aDate = a.transactionDate || (a.createdAt ? a.createdAt.split('T')[0] : '');
+        if (aDate && aDate > endDate) return false;
+        return a.status !== 'Settled';
+      })
+      .reduce((sum, a) => sum + (a.balanceDue || 0), 0);
+
+    const accruedSalaries = salariesList
+      .filter(s => {
+        const sDate = s.paymentDate || (s.createdAt ? s.createdAt.split('T')[0] : '');
+        if (sDate && sDate > endDate) return false;
+        return s.status !== 'Paid' && s.status !== 'Advance';
+      })
+      .reduce((sum, s) => sum + (s.balanceDue || 0), 0);
+
     const liabilities = accountsPayable + accruedSalaries; // Current liabilities
     const equity = totalAssets - liabilities; // Assets = Liabilities + Equity
-    const retainedEarnings = equity - totalPartnerCapital;
+    const operatingSurplus = (currentAssets + totalFixedAssets) - liabilities - totalPartnerCapital;
+    // Net profit is part of Equity instead of operating profit (after deducting accumulated depreciation)
+    const netProfit = equity - totalPartnerCapital;
+    const retainedEarnings = netProfit;
 
     return { 
+      periodLabel,
+      startDate,
+      endDate,
+      asOfDate,
       bankBalance,
       cashBalance,
       cashAndBank,
@@ -1392,14 +1492,21 @@ const ReportsFinances = () => {
       depositTransactions,
       currentAssets, 
       totalFixedAssets, 
+      totalAccumulatedDepreciation,
+      currentFYDepreciationYTD,
+      netFixedAssets,
       assetsByCategory, 
       assetTransactions,
       totalAssets, 
       liabilities, 
+      accountsPayable,
+      accruedSalaries,
       equity,
       totalPartnerCapital,
       partnerCapitalByName,
       partnerInvestments,
+      operatingSurplus,
+      netProfit,
       retainedEarnings
     };
   };
@@ -1432,33 +1539,29 @@ const ReportsFinances = () => {
       priorEndDate = format(endOfMonth(twoMonthsAgo), 'yyyy-MM-dd');
       monthsInPeriod = 1;
     } else if (pnlPeriod === 'this_quarter') {
-      const qStartMonth = Math.floor(now.getMonth() / 3) * 3;
-      const qStart = new Date(now.getFullYear(), qStartMonth, 1);
-      const qEnd = endOfMonth(new Date(now.getFullYear(), qStartMonth + 2, 1));
-      startDate = format(qStart, 'yyyy-MM-dd');
-      endDate = format(qEnd, 'yyyy-MM-dd');
-      periodLabel = `Q${Math.floor(now.getMonth() / 3) + 1} ${now.getFullYear()}`;
-      const prevQStart = new Date(now.getFullYear(), qStartMonth - 3, 1);
-      const prevQEnd = endOfMonth(new Date(now.getFullYear(), qStartMonth - 1, 1));
-      priorStartDate = format(prevQStart, 'yyyy-MM-dd');
-      priorEndDate = format(prevQEnd, 'yyyy-MM-dd');
+      const fyInfo = getIndianFYInfo(now);
+      startDate = fyInfo.quarterStartDate;
+      endDate = fyInfo.quarterEndDate > format(now, 'yyyy-MM-dd') ? format(now, 'yyyy-MM-dd') : fyInfo.quarterEndDate;
+      periodLabel = `${fyInfo.quarterLabel} (Indian FY)`;
+      const prevQEnd = new Date(new Date(fyInfo.quarterStartDate).getTime() - 86400000);
+      const prevQInfo = getIndianFYInfo(prevQEnd);
+      priorStartDate = prevQInfo.quarterStartDate;
+      priorEndDate = prevQInfo.quarterEndDate;
       monthsInPeriod = 3;
     } else if (pnlPeriod === 'ytd') {
-      const fyStart = now.getMonth() >= 3 
-        ? new Date(now.getFullYear(), 3, 1) 
-        : new Date(now.getFullYear() - 1, 3, 1);
-      startDate = format(fyStart, 'yyyy-MM-dd');
-      endDate = format(now, 'yyyy-MM-dd');
-      periodLabel = `FY ${fyStart.getFullYear()}-${fyStart.getFullYear() + 1} (YTD)`;
-      const priorFyStart = new Date(fyStart.getFullYear() - 1, 3, 1);
-      const priorFyEnd = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
-      priorStartDate = format(priorFyStart, 'yyyy-MM-dd');
-      priorEndDate = format(priorFyEnd, 'yyyy-MM-dd');
-      monthsInPeriod = Math.max(1, (now.getFullYear() - fyStart.getFullYear()) * 12 + now.getMonth() - fyStart.getMonth() + 1);
+      const fyInfo = getIndianFYInfo(now);
+      startDate = fyInfo.fyStartDate;
+      endDate = fyInfo.fyEndDate;
+      periodLabel = `${fyInfo.fyLabel} (Cumulative: Apr ${fyInfo.fyStartYear} - Mar ${fyInfo.fyEndYear})`;
+      const priorFyStart = `${fyInfo.fyStartYear - 1}-04-01`;
+      const priorFyEnd = `${fyInfo.fyStartYear}-03-31`;
+      priorStartDate = priorFyStart;
+      priorEndDate = priorFyEnd;
+      monthsInPeriod = 12;
     } else if (pnlPeriod === 'custom') {
       startDate = pnlCustomStart || format(startOfMonth(now), 'yyyy-MM-dd');
       endDate = pnlCustomEnd || format(now, 'yyyy-MM-dd');
-      periodLabel = `${startDate} to ${endDate}`;
+      periodLabel = `${formatDate(startDate)} to ${formatDate(endDate)}`;
       const diffMs = new Date(endDate).getTime() - new Date(startDate).getTime();
       const priorEnd = new Date(new Date(startDate).getTime() - 86400000);
       const priorStart = new Date(priorEnd.getTime() - diffMs);
@@ -1522,16 +1625,83 @@ const ReportsFinances = () => {
     const operatingProfit = totalRevenue - totalOperatingExpenses;
     const operatingMargin = totalRevenue > 0 ? (operatingProfit / totalRevenue) * 100 : 0;
 
-    // Capital Asset Depreciation in period
+    // Capital Asset Depreciation in period (Aligned with Indian Financial Year and Asset Active Months)
     let totalDepreciation = 0;
     const depreciationByAssetCategory: Record<string, { totalCost: number; depreciation: number; count: number }> = {};
+    const fyInfo = getIndianFYInfo(now);
     
     transactions.filter(isAssetTx).forEach(t => {
       if (t.date && t.date <= endDate) {
         const cost = safeNum(t.amount);
         const usefulLife = safeNum(t.assetDetails?.usefulLifeYears) || 5;
-        const monthlyDep = cost / (usefulLife * 12);
-        const periodDep = monthlyDep * monthsInPeriod;
+        const totalUsefulMonths = usefulLife * 12;
+        const monthlyDep = totalUsefulMonths > 0 ? cost / totalUsefulMonths : 0;
+        const purchaseDate = t.date;
+        const pDate = new Date(purchaseDate);
+
+        let periodDep = 0;
+        if (pnlPeriod === 'all_time') {
+          // All-time cumulative depreciation up to current date (capped at useful life)
+          const elapsedMonths = Math.max(1, (now.getFullYear() - pDate.getFullYear()) * 12 + (now.getMonth() - pDate.getMonth()) + 1);
+          const activeMonths = Math.min(totalUsefulMonths, elapsedMonths);
+          periodDep = Math.min(cost, Math.round(monthlyDep * activeMonths));
+        } else if (pnlPeriod === 'ytd') {
+          // Indian FY YTD depreciation: from max(purchaseDate, fyStartDate) up to endDate
+          const serviceStart = purchaseDate > fyInfo.fyStartDate ? purchaseDate : fyInfo.fyStartDate;
+          if (serviceStart <= endDate) {
+            const sDate = new Date(serviceStart);
+            const eDate = new Date(endDate);
+            const elapsed = Math.max(1, (eDate.getFullYear() - sDate.getFullYear()) * 12 + (eDate.getMonth() - sDate.getMonth()) + 1);
+            const priorMonths = purchaseDate < fyInfo.fyStartDate
+              ? Math.max(0, (fyInfo.fyStartYear - pDate.getFullYear()) * 12 + (3 - pDate.getMonth()))
+              : 0;
+            const remainingMonths = Math.max(0, totalUsefulMonths - priorMonths);
+            const activeMonths = Math.min(remainingMonths, elapsed);
+            const priorDep = Math.round(priorMonths * monthlyDep);
+            periodDep = Math.min(Math.max(0, cost - priorDep), Math.round(monthlyDep * activeMonths));
+          }
+        } else if (pnlPeriod === 'this_quarter') {
+          // Indian FY Quarter: from max(purchaseDate, quarterStartDate) up to endDate
+          const serviceStart = purchaseDate > fyInfo.quarterStartDate ? purchaseDate : fyInfo.quarterStartDate;
+          if (serviceStart <= endDate) {
+            const sDate = new Date(serviceStart);
+            const eDate = new Date(endDate);
+            const elapsed = Math.max(1, (eDate.getFullYear() - sDate.getFullYear()) * 12 + (eDate.getMonth() - sDate.getMonth()) + 1);
+            const priorMonths = purchaseDate < fyInfo.quarterStartDate
+              ? Math.max(0, (sDate.getFullYear() - pDate.getFullYear()) * 12 + (sDate.getMonth() - pDate.getMonth()))
+              : 0;
+            const remainingMonths = Math.max(0, totalUsefulMonths - priorMonths);
+            const activeMonths = Math.min(remainingMonths, elapsed);
+            periodDep = Math.min(cost, Math.round(monthlyDep * activeMonths));
+          }
+        } else if (pnlPeriod === 'this_month' || pnlPeriod === 'last_month') {
+          // Single month depreciation
+          const serviceStart = purchaseDate > startDate ? purchaseDate : startDate;
+          if (serviceStart <= endDate) {
+            const sDate = new Date(startDate);
+            const priorMonths = purchaseDate < startDate
+              ? Math.max(0, (sDate.getFullYear() - pDate.getFullYear()) * 12 + (sDate.getMonth() - pDate.getMonth()))
+              : 0;
+            if (priorMonths < totalUsefulMonths) {
+              periodDep = Math.min(cost, Math.round(monthlyDep));
+            }
+          }
+        } else {
+          // Custom date range
+          const serviceStart = purchaseDate > startDate ? purchaseDate : startDate;
+          if (serviceStart <= endDate) {
+            const sDate = new Date(serviceStart);
+            const eDate = new Date(endDate);
+            const elapsed = Math.max(1, (eDate.getFullYear() - sDate.getFullYear()) * 12 + (eDate.getMonth() - sDate.getMonth()) + 1);
+            const priorMonths = purchaseDate < startDate
+              ? Math.max(0, (sDate.getFullYear() - pDate.getFullYear()) * 12 + (sDate.getMonth() - pDate.getMonth()))
+              : 0;
+            const remainingMonths = Math.max(0, totalUsefulMonths - priorMonths);
+            const activeMonths = Math.min(remainingMonths, elapsed);
+            periodDep = Math.min(cost, Math.round(monthlyDep * activeMonths));
+          }
+        }
+
         totalDepreciation += periodDep;
 
         const cat = t.assetDetails?.category || t.category || 'Play & Learning Equipment';
@@ -1653,7 +1823,7 @@ const ReportsFinances = () => {
 
   // Filtered Partner Investments in Partners tab
   const filteredInvestments = useMemo(() => {
-    return bs.partnerInvestments.filter(t => {
+    return transactions.filter(isInvestmentTx).filter(t => {
       const pName = t.partnerName || '';
       const notes = t.description || '';
       const cat = t.category || '';
@@ -1669,7 +1839,7 @@ const ReportsFinances = () => {
 
       return matchesSearch && matchesPartner;
     });
-  }, [bs.partnerInvestments, partnerSearchQuery, partnerFilter]);
+  }, [transactions, partnerSearchQuery, partnerFilter]);
 
   // Filtered Deposits for the Balance Sheet Security Deposits Register
   const filteredDeposits = bs.depositTransactions.filter(item => {
@@ -1702,345 +1872,1025 @@ const ReportsFinances = () => {
     return true;
   });
 
-  // Excel Export with Fixed Assets Register
+  // Executive Multi-Tab Professional Financial Workbook Export
   const handleExportExcel = async () => {
     const wb = new ExcelJS.Workbook();
-    
-    const styleHeader = (ws: ExcelJS.Worksheet) => {
-      ws.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
-      ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4F46E5' } };
-      ws.getRow(1).alignment = { horizontal: 'center' };
-    };
+    wb.creator = 'Little Buds Child Care Centre';
+    wb.lastModifiedBy = 'Finance & Accounts Administration';
+    wb.created = new Date();
+    wb.modified = new Date();
 
-    const applyBorders = (ws: ExcelJS.Worksheet) => {
-      ws.eachRow((row) => {
-        row.eachCell((cell) => {
-          cell.border = {
-            top: { style: 'thin' },
-            left: { style: 'thin' },
-            bottom: { style: 'thin' },
-            right: { style: 'thin' }
-          };
-        });
-      });
-    };
+    // ----------------------------------------------------
+    // SHEET 1: EXECUTIVE FINANCIAL SUMMARY & KPI DASHBOARD
+    // ----------------------------------------------------
+    const wsSummary = wb.addWorksheet('Executive Summary', {
+      properties: { tabColor: { argb: 'FFD97706' } }
+    });
+    addExecutiveReportHeader(wsSummary, {
+      title: 'Executive Financial Summary',
+      subtitle: 'FINANCIAL PERFORMANCE & POSITION DASHBOARD',
+      colSpan: 4,
+      periodLabel: `P&L: ${pnl.periodLabel} | Balance Sheet: ${bs.periodLabel}`,
+      asOfDate: new Date()
+    });
 
-    // 1. Profit & Loss Statement Sheet
-    const wsPnl = wb.addWorksheet('Profit & Loss');
-    wsPnl.columns = [
-      { header: 'Section / Classification', key: 'section', width: 28 },
-      { header: 'Particulars / Account Head', key: 'item', width: 42 },
-      { header: `Amount (₹) [${pnl.periodLabel}]`, key: 'amount', width: 25 }
+    const hSummary = wsSummary.addRow(['Financial Metric', 'Reporting Category / Scope', 'Figure / Balance (₹)', 'Performance / Audit Notes']);
+    styleHeaderRow(hSummary, 4, EXCEL_COLORS.navyHeader);
+    hSummary.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
+
+    const summaryMetrics = [
+      { name: 'Total Operating Revenue', cat: 'Income Statement (P&L)', val: pnl.totalRevenue, note: `Fee Collections: ₹${pnl.tuitionRevenue.toLocaleString('en-IN')} | Other: ₹${pnl.otherIncomeTotal.toLocaleString('en-IN')}`, isCurrency: true },
+      { name: 'Total Operating Expenses', cat: 'Income Statement (P&L)', val: pnl.totalOperatingExpenses, note: `${Object.keys(pnl.expensesByCategory).length} Active Expense Categories`, isCurrency: true },
+      { name: 'Operating Profit / EBITDA', cat: 'Operational Surplus', val: pnl.operatingProfit, note: `Operating Margin: ${pnl.operatingMargin.toFixed(1)}%`, isCurrency: true, isHighlight: true },
+      { name: 'Capital Asset Depreciation', cat: 'Non-Cash Amortization', val: Math.round(pnl.totalDepreciation), note: 'Straight-line pro-rata depreciation', isCurrency: true },
+      { name: 'Net Profit / Net Surplus', cat: 'Net Result (Surplus / Deficit)', val: Math.round(pnl.netProfit), note: `Net Margin: ${pnl.netProfitMargin.toFixed(1)}%`, isCurrency: true, isHighlight: true },
+      { name: 'Closing Bank Balance', cat: 'Liquid Assets (Account 1010)', val: bs.bankBalance, note: 'Bank Accounts, UPI & Online Collections', isCurrency: true },
+      { name: 'Closing Cash in Hand Balance', cat: 'Liquid Assets (Account 1020)', val: bs.cashBalance, note: 'Physical Cash Drawer on Premises', isCurrency: true },
+      { name: 'Total Liquid Funds Available', cat: 'Total Cash & Bank', val: bs.cashAndBank, note: 'Immediate operational liquidity', isCurrency: true, isHighlight: true },
+      { name: 'Accounts Receivable (Fee Dues)', cat: 'Current Assets (Account 1200)', val: bs.accountsReceivable, note: 'Pending parent tuition balances', isCurrency: true },
+      { name: 'Refundable Security Deposits Paid', cat: 'Current Assets (Account 1300)', val: bs.totalSecurityDeposits, note: `${bs.depositTransactions.length} Facility, landlord & utility deposits`, isCurrency: true },
+      { name: 'Total Current Assets', cat: 'Current Assets Group', val: bs.currentAssets, note: 'Liquid + Fee Receivables + Security Deposits', isCurrency: true, isHighlight: true },
+      { name: 'Gross Fixed Capital Assets', cat: 'Fixed Assets (Gross Book Value)', val: bs.totalFixedAssets, note: `${bs.assetTransactions.length} Capital Equipment & Facilities`, isCurrency: true },
+      { name: 'Less: Accumulated Depreciation', cat: 'Contra-Asset (Account 1600)', val: -bs.totalAccumulatedDepreciation, note: 'All-time cumulative amortized value', isCurrency: true },
+      { name: 'Net Fixed Capital Assets', cat: 'Fixed Assets (Net Book Value)', val: bs.netFixedAssets, note: 'Depreciated carrying value on balance sheet', isCurrency: true, isHighlight: true },
+      { name: 'TOTAL BALANCE SHEET ASSETS', cat: 'Total Centre Assets', val: bs.totalAssets, note: 'Current Assets + Net Fixed Assets', isCurrency: true, isTotal: true },
+      { name: 'Current Liabilities (Payables & Accruals)', cat: 'Current Liabilities (Account 2000)', val: bs.liabilities, note: 'Unsettled vendor accruals & unpaid staff salaries', isCurrency: true },
+      { name: 'Total Partner Capital Invested', cat: 'Equity (Account 3010)', val: bs.totalPartnerCapital, note: `${Object.keys(bs.partnerCapitalByName).length} Active Partners`, isCurrency: true },
+      { name: 'Net Profit & Retained Surplus', cat: 'Equity (Account 3020)', val: bs.netProfit, note: 'Cumulative Net Profit after deducting YTD accumulated depreciation', isCurrency: true, isHighlight: true },
+      { name: 'TOTAL LIABILITIES & EQUITY', cat: 'Double-Entry Balanced Total', val: bs.liabilities + bs.equity, note: 'Verified balanced: Assets = Liabilities + Capital + Net Profit', isCurrency: true, isTotal: true }
     ];
 
-    wsPnl.addRow({ section: 'REVENUE', item: 'OPERATING REVENUES & INCOMES', amount: '' }).font = { bold: true };
+    summaryMetrics.forEach((m, idx) => {
+      const r = wsSummary.addRow([m.name, m.cat, m.val, m.note]);
+      if (m.isTotal) {
+        styleTotalRow(r, 4);
+      } else {
+        styleDataRow(r, 4, idx % 2 === 0);
+        if (m.isHighlight) {
+          r.font = { name: 'Calibri', size: 10.5, bold: true, color: { argb: 'FF1E1B4B' } };
+        }
+      }
+      r.getCell(3).numFmt = NUMBER_FORMATS.currency;
+      r.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
+    });
+
+    setupSheetViews(wsSummary, 5);
+    autoFitWorksheetColumns(wsSummary, { 1: 32, 2: 30, 3: 24, 4: 42 });
+
+    // ----------------------------------------------------
+    // SHEET 2: STATEMENT OF PROFIT & LOSS (ACCRUAL BASIS)
+    // ----------------------------------------------------
+    const wsPnl = wb.addWorksheet('Profit & Loss', {
+      properties: { tabColor: { argb: 'FF4F46E5' } }
+    });
+    addExecutiveReportHeader(wsPnl, {
+      title: 'Statement of Profit and Loss',
+      subtitle: 'INCOME STATEMENT — ACCRUAL ACCOUNTING STANDARD',
+      colSpan: 3,
+      periodLabel: pnl.periodLabel,
+      asOfDate: pnl.endDate
+    });
+
+    const hPnl = wsPnl.addRow(['Accounting Section / Category', 'Particulars / Account Head', 'Amount (₹)']);
+    styleHeaderRow(hPnl, 3, EXCEL_COLORS.navyHeader);
+    hPnl.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
+
+    let pnlRowIdx = 0;
+    // Section A: Revenue
+    const rRevH = wsPnl.addRow(['I. REVENUE', 'OPERATING REVENUES & COLLECTIONS', '']);
+    styleSectionHeaderRow(rRevH, 3, 'I. OPERATING REVENUES & FEE INCOMES', 'FFECFDF5', 'FF065F46');
+
     Object.entries(pnl.feesByType).forEach(([feeType, amt]) => {
-      wsPnl.addRow({ section: 'Fee Collections', item: `Tuition Fees - ${feeType}`, amount: amt });
+      const r = wsPnl.addRow(['Tuition Collections', `Tuition & Program Fees — ${feeType}`, amt]);
+      styleDataRow(r, 3, pnlRowIdx++ % 2 === 0);
+      r.getCell(3).numFmt = NUMBER_FORMATS.currency;
+      r.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
     });
     Object.entries(pnl.otherIncomesByCategory).forEach(([cat, amt]) => {
-      wsPnl.addRow({ section: 'Other Income', item: cat, amount: amt });
+      const r = wsPnl.addRow(['Other Incomes', cat, amt]);
+      styleDataRow(r, 3, pnlRowIdx++ % 2 === 0);
+      r.getCell(3).numFmt = NUMBER_FORMATS.currency;
+      r.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
     });
-    wsPnl.addRow({ section: 'TOTAL REVENUE', item: 'TOTAL OPERATING REVENUE (A)', amount: pnl.totalRevenue }).font = { bold: true, color: { argb: 'FF10B981' } };
-    wsPnl.addRow({});
 
-    wsPnl.addRow({ section: 'EXPENSES', item: 'OPERATING EXPENSES & OVERHEADS', amount: '' }).font = { bold: true };
+    const rTotRev = wsPnl.addRow(['TOTAL REVENUE', 'TOTAL OPERATING REVENUE (A)', pnl.totalRevenue]);
+    styleTotalRow(rTotRev, 3, { fillColor: 'FFD1FAE5', textColor: 'FF065F46' });
+    rTotRev.getCell(3).numFmt = NUMBER_FORMATS.currency;
+    rTotRev.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
+    wsPnl.addRow([]); // Blank
+
+    // Section B: Expenses
+    const rExpH = wsPnl.addRow(['II. OPERATING EXPENSES', 'OPERATIONAL EXPENSES & OVERHEADS', '']);
+    styleSectionHeaderRow(rExpH, 3, 'II. OPERATIONAL OVERHEADS & EXPENSES', 'FFFEF2F2', 'FF9F1239');
+
     Object.entries(pnl.expensesByCategory).forEach(([cat, data]) => {
-      wsPnl.addRow({ section: 'Operating Overhead', item: `${cat} (${data.count} txns)`, amount: data.total });
+      const r = wsPnl.addRow(['Operating Expense', `${cat} (${data.count} transactions)`, data.total]);
+      styleDataRow(r, 3, pnlRowIdx++ % 2 === 0);
+      r.getCell(3).numFmt = NUMBER_FORMATS.currency;
+      r.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
     });
-    wsPnl.addRow({ section: 'TOTAL EXPENSES', item: 'TOTAL OPERATING EXPENSES (B)', amount: pnl.totalOperatingExpenses }).font = { bold: true, color: { argb: 'FFEF4444' } };
-    wsPnl.addRow({});
 
-    wsPnl.addRow({ section: 'OPERATING PROFIT', item: 'OPERATING PROFIT / EBITDA (A - B)', amount: pnl.operatingProfit }).font = { bold: true, color: { argb: 'FF4F46E5' } };
-    wsPnl.addRow({ section: 'OPERATING MARGIN', item: 'Operating Margin %', amount: `${pnl.operatingMargin.toFixed(1)}%` });
-    wsPnl.addRow({});
+    const rTotExp = wsPnl.addRow(['TOTAL EXPENSES', 'TOTAL OPERATING EXPENSES (B)', pnl.totalOperatingExpenses]);
+    styleTotalRow(rTotExp, 3, { fillColor: 'FFFEE2E2', textColor: 'FF991B1B' });
+    rTotExp.getCell(3).numFmt = NUMBER_FORMATS.currency;
+    rTotExp.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
+    wsPnl.addRow([]);
 
-    wsPnl.addRow({ section: 'DEPRECIATION', item: 'DEPRECIATION OF FIXED CAPITAL ASSETS', amount: '' }).font = { bold: true };
+    // Operating Profit
+    const rOpProfit = wsPnl.addRow(['OPERATING PROFIT', 'OPERATING PROFIT / EBITDA (A - B)', pnl.operatingProfit]);
+    styleTotalRow(rOpProfit, 3, { fillColor: 'FFE0E7FF', textColor: 'FF312E81' });
+    rOpProfit.getCell(3).numFmt = NUMBER_FORMATS.currency;
+    rOpProfit.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
+
+    const rOpMargin = wsPnl.addRow(['OPERATING MARGIN', 'Operating Profit Margin %', (pnl.operatingMargin / 100)]);
+    styleDataRow(rOpMargin, 3, false);
+    rOpMargin.getCell(3).numFmt = NUMBER_FORMATS.percentage;
+    rOpMargin.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
+    wsPnl.addRow([]);
+
+    // Section C: Depreciation
+    const rDepH = wsPnl.addRow(['III. ASSET DEPRECIATION', 'NON-CASH CAPITAL AMORTIZATION', '']);
+    styleSectionHeaderRow(rDepH, 3, 'III. CAPITAL ASSET DEPRECIATION (INDIAN FY SCHEDULE)', 'FFF1F5F9', 'FF334155');
+
     Object.entries(pnl.depreciationByAssetCategory).forEach(([cat, data]) => {
-      wsPnl.addRow({ section: 'Depreciation Schedule', item: `${cat} (${data.count} assets)`, amount: Math.round(data.depreciation) });
+      const r = wsPnl.addRow(['Depreciation Schedule', `${cat} (${data.count} assets)`, Math.round(data.depreciation)]);
+      styleDataRow(r, 3, pnlRowIdx++ % 2 === 0);
+      r.getCell(3).numFmt = NUMBER_FORMATS.currency;
+      r.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
     });
-    wsPnl.addRow({ section: 'TOTAL DEPRECIATION', item: 'TOTAL ASSET DEPRECIATION (C)', amount: Math.round(pnl.totalDepreciation) }).font = { bold: true };
-    wsPnl.addRow({});
 
-    wsPnl.addRow({ section: 'NET RESULT', item: 'NET PROFIT / SURPLUS (LOSS) [A - B - C]', amount: Math.round(pnl.netProfit) }).font = { bold: true, color: { argb: pnl.netProfit >= 0 ? 'FF10B981' : 'FFEF4444' } };
-    wsPnl.addRow({ section: 'NET MARGIN', item: 'Net Profit Margin %', amount: `${pnl.netProfitMargin.toFixed(1)}%` });
+    const rTotDep = wsPnl.addRow(['TOTAL DEPRECIATION', 'TOTAL ASSET DEPRECIATION CHARGE (C)', Math.round(pnl.totalDepreciation)]);
+    styleTotalRow(rTotDep, 3, { fillColor: 'FFE2E8F0', textColor: 'FF1E293B' });
+    rTotDep.getCell(3).numFmt = NUMBER_FORMATS.currency;
+    rTotDep.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
+    wsPnl.addRow([]);
 
-    styleHeader(wsPnl);
-    applyBorders(wsPnl);
+    // Net Result
+    const isSurplus = pnl.netProfit >= 0;
+    const rNet = wsPnl.addRow(['NET SURPLUS / (DEFICIT)', 'NET PROFIT / SURPLUS FOR PERIOD (A - B - C)', Math.round(pnl.netProfit)]);
+    styleTotalRow(rNet, 3, {
+      fillColor: isSurplus ? 'FFD1FAE5' : 'FFFEE2E2',
+      textColor: isSurplus ? 'FF065F46' : 'FF991B1B'
+    });
+    rNet.getCell(3).numFmt = NUMBER_FORMATS.currency;
+    rNet.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
 
-    // 2. Balance Sheet Sheet
-    const wsBs = wb.addWorksheet('Balance Sheet');
-    wsBs.columns = [
-      { header: 'Classification', key: 'class', width: 20 },
-      { header: 'Category / Particulars', key: 'item', width: 40 },
-      { header: 'Amount (Rs)', key: 'amount', width: 20 }
+    const rNetMargin = wsPnl.addRow(['NET PROFIT MARGIN', 'Net Profit Margin %', (pnl.netProfitMargin / 100)]);
+    styleDataRow(rNetMargin, 3, false);
+    rNetMargin.getCell(3).numFmt = NUMBER_FORMATS.percentage;
+    rNetMargin.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
+
+    setupSheetViews(wsPnl, 5);
+    autoFitWorksheetColumns(wsPnl, { 1: 30, 2: 44, 3: 24 });
+
+    // ----------------------------------------------------
+    // SHEET 3: BALANCE SHEET (FINANCIAL POSITION)
+    // ----------------------------------------------------
+    const wsBs = wb.addWorksheet('Balance Sheet', {
+      properties: { tabColor: { argb: 'FF2563EB' } }
+    });
+    addExecutiveReportHeader(wsBs, {
+      title: 'Statement of Financial Position (Balance Sheet)',
+      subtitle: 'ASSETS, LIABILITIES & PARTNER CAPITAL EQUITY',
+      colSpan: 3,
+      periodLabel: bs.periodLabel,
+      asOfDate: bs.asOfDate
+    });
+
+    const hBs = wsBs.addRow(['Classification & Standard Code', 'Account Head / Category Description', 'Amount (₹)']);
+    styleHeaderRow(hBs, 3, EXCEL_COLORS.navyHeader);
+    hBs.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
+
+    let bsRowIdx = 0;
+    // 1. Current Assets
+    const rCaH = wsBs.addRow(['1. CURRENT ASSETS', 'LIQUID FUNDS, RECEIVABLES & DEPOSITS', '']);
+    styleSectionHeaderRow(rCaH, 3, '1. CURRENT ASSETS (LIQUID FUNDS & SHORT-TERM RECEIVABLES)', 'FFEFF6FF', 'FF1E40AF');
+
+    const caItems = [
+      { code: 'Asset #1010', name: 'Bank Balance (Primary Accounts, UPI & Online Collections)', amt: bs.bankBalance },
+      { code: 'Asset #1020', name: 'Cash Balance (Physical Cash in Hand Drawer)', amt: bs.cashBalance },
+      { code: 'Subtotal Liquid', name: '↳ Subtotal Liquid Cash & Bank Funds', amt: bs.cashAndBank, isSub: true },
+      { code: 'Asset #1200', name: 'Accounts Receivable (Outstanding Student Tuition Fee Dues)', amt: bs.accountsReceivable },
+      { code: 'Asset #1300', name: 'Security Deposits Paid (Premises Lease, Utility & Caution Deposits)', amt: bs.totalSecurityDeposits }
     ];
-    
-    wsBs.addRow({ class: 'Current Assets', item: 'Bank Balance (Bank Accounts, UPI & Online)', amount: bs.bankBalance });
-    wsBs.addRow({ class: 'Current Assets', item: 'Cash Balance (Physical Cash in Hand)', amount: bs.cashBalance });
-    wsBs.addRow({ class: 'Current Assets', item: 'Subtotal Cash & Bank Liquid Funds', amount: bs.cashAndBank }).font = { italic: true };
-    wsBs.addRow({ class: 'Current Assets', item: 'Accounts Receivable (Fee Dues)', amount: bs.accountsReceivable });
-    wsBs.addRow({ class: 'Current Assets', item: 'Security Deposits Paid (Premises Lease, Utility & Caution Deposits)', amount: bs.totalSecurityDeposits });
-    wsBs.addRow({ class: 'Current Assets', item: 'TOTAL CURRENT ASSETS', amount: bs.currentAssets }).font = { bold: true };
-    wsBs.addRow({});
-
-    wsBs.addRow({ class: 'Fixed Assets', item: 'Fixed Capital Assets (Gross Book Value)', amount: '' }).font = { bold: true };
-    Object.entries(bs.assetsByCategory).forEach(([category, data]) => {
-      wsBs.addRow({ class: 'Fixed Assets', item: `${category} (${data.count} items)`, amount: data.total });
+    caItems.forEach(i => {
+      const r = wsBs.addRow([i.code, i.name, i.amt]);
+      styleDataRow(r, 3, bsRowIdx++ % 2 === 0);
+      if (i.isSub) {
+        r.font = { name: 'Calibri', size: 10, italic: true, bold: true, color: { argb: 'FF1E40AF' } };
+        r.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF0F9FF' } };
+      }
+      r.getCell(3).numFmt = NUMBER_FORMATS.currency;
+      r.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
     });
-    wsBs.addRow({ class: 'Fixed Assets', item: 'TOTAL FIXED ASSETS', amount: bs.totalFixedAssets }).font = { bold: true };
-    wsBs.addRow({});
 
-    wsBs.addRow({ class: 'Total Assets', item: 'TOTAL ASSETS', amount: bs.totalAssets }).font = { bold: true, color: { argb: 'FF4F46E5' } };
-    wsBs.addRow({});
+    const rTotCa = wsBs.addRow(['TOTAL CURRENT ASSETS', 'TOTAL CURRENT ASSETS (A)', bs.currentAssets]);
+    styleTotalRow(rTotCa, 3, { fillColor: 'FFDBEAFE', textColor: 'FF1E3A8A' });
+    rTotCa.getCell(3).numFmt = NUMBER_FORMATS.currency;
+    rTotCa.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
+    wsBs.addRow([]);
 
-    wsBs.addRow({ class: 'Liabilities', item: 'Total Liabilities', amount: bs.liabilities });
-    wsBs.addRow({ class: 'Equity', item: 'Capital & General Reserve Fund', amount: bs.equity });
-    wsBs.addRow({ class: 'Liabilities & Equity', item: 'TOTAL LIABILITIES & EQUITY', amount: bs.liabilities + bs.equity }).font = { bold: true, color: { argb: 'FF10B981' } };
+    // 2. Fixed Capital Assets
+    const rFaH = wsBs.addRow(['2. FIXED ASSETS', 'CAPITAL ASSETS & DEPRECIATION SCHEDULE', '']);
+    styleSectionHeaderRow(rFaH, 3, '2. CAPITAL FIXED ASSETS & AMORTIZATION', 'FFF0FDF4', 'FF166534');
 
-    styleHeader(wsBs);
-    applyBorders(wsBs);
+    Object.entries(bs.assetsByCategory).forEach(([cat, data]) => {
+      const r = wsBs.addRow(['Fixed Asset Gross', `${cat} (${data.count} items)`, data.total]);
+      styleDataRow(r, 3, bsRowIdx++ % 2 === 0);
+      r.getCell(3).numFmt = NUMBER_FORMATS.currency;
+      r.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
+    });
 
-    // 2. Fixed Assets Register Detail Sheet
-    const wsAssets = wb.addWorksheet('Fixed Assets Register');
-    wsAssets.columns = [
-      { header: 'Asset Name', key: 'name', width: 30 },
-      { header: 'Asset Category', key: 'category', width: 28 },
-      { header: 'Acquisition Date', key: 'date', width: 16 },
-      { header: 'Cost Value (Rs)', key: 'cost', width: 18 },
-      { header: 'Location / Room', key: 'location', width: 22 },
-      { header: 'Useful Life (Yrs)', key: 'life', width: 16 },
-      { header: 'Condition', key: 'condition', width: 15 },
-      { header: 'Serial / Tag No.', key: 'serial', width: 20 },
-      { header: 'Notes / Description', key: 'notes', width: 35 }
+    const rGrossFa = wsBs.addRow(['Fixed Assets Gross', 'Total Fixed Assets (Gross Historical Cost)', bs.totalFixedAssets]);
+    styleDataRow(rGrossFa, 3, false);
+    rGrossFa.font = { name: 'Calibri', size: 10.5, bold: true, color: { argb: 'FF1E293B' } };
+    rGrossFa.getCell(3).numFmt = NUMBER_FORMATS.currency;
+    rGrossFa.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
+
+    const rAccDep = wsBs.addRow(['Contra Asset #1600', 'Less: Accumulated Depreciation to Date', -bs.totalAccumulatedDepreciation]);
+    styleDataRow(rAccDep, 3, true);
+    rAccDep.font = { name: 'Calibri', size: 10, italic: true, color: { argb: 'FFDC2626' } };
+    rAccDep.getCell(3).numFmt = NUMBER_FORMATS.currency;
+    rAccDep.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
+
+    const rNetFa = wsBs.addRow(['TOTAL NET FIXED ASSETS', 'NET FIXED CAPITAL ASSETS (Carrying Book Value) (B)', bs.netFixedAssets]);
+    styleTotalRow(rNetFa, 3, { fillColor: 'FFDCFCE7', textColor: 'FF166534' });
+    rNetFa.getCell(3).numFmt = NUMBER_FORMATS.currency;
+    rNetFa.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
+    wsBs.addRow([]);
+
+    // Total Assets (Current Assets + Net Fixed Assets)
+    const rTotAss = wsBs.addRow(['TOTAL ASSETS', 'TOTAL CENTRE ASSETS (Current Assets + Net Fixed Assets)', bs.totalAssets]);
+    styleTotalRow(rTotAss, 3, { fillColor: 'FF312E81', textColor: 'FFFFFFFF' });
+    rTotAss.getCell(3).numFmt = NUMBER_FORMATS.currency;
+    rTotAss.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
+    wsBs.addRow([]);
+
+    // 3. Liabilities
+    const rLiabH = wsBs.addRow(['3. CURRENT LIABILITIES', 'ACCOUNTS PAYABLE & ACCRUED SALARIES', '']);
+    styleSectionHeaderRow(rLiabH, 3, '3. CURRENT LIABILITIES & ACCRUED OBLIGATIONS', 'FFFDF4FF', 'FF86198F');
+
+    const liabItems = [
+      { code: 'Liability #2010', name: 'Accounts Payable (Unsettled Accrued Expenses & Overheads)', amt: bs.accountsPayable },
+      { code: 'Liability #2030', name: 'Accrued Staff Salaries (Unpaid Payroll Obligations)', amt: bs.accruedSalaries }
     ];
-
-    bs.assetTransactions.forEach(t => {
-      wsAssets.addRow({
-        name: t.assetDetails?.assetName || t.description || t.category,
-        category: t.assetDetails?.category || t.category,
-        date: t.date,
-        cost: t.amount,
-        location: t.assetDetails?.locationOrRoom || 'Centre',
-        life: t.assetDetails?.usefulLifeYears || 5,
-        condition: t.assetDetails?.condition || 'Good',
-        serial: t.assetDetails?.serialNumber || 'N/A',
-        notes: t.assetDetails?.notes || t.description || ''
-      });
+    liabItems.forEach(i => {
+      const r = wsBs.addRow([i.code, i.name, i.amt]);
+      styleDataRow(r, 3, bsRowIdx++ % 2 === 0);
+      r.getCell(3).numFmt = NUMBER_FORMATS.currency;
+      r.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
     });
 
-    wsAssets.addRow({});
-    wsAssets.addRow({
-      name: 'TOTAL FIXED ASSETS VALUE',
-      category: `${bs.assetTransactions.length} Asset Items`,
-      date: '',
-      cost: bs.totalFixedAssets
-    }).font = { bold: true, color: { argb: 'FF4F46E5' } };
+    const rTotLiab = wsBs.addRow(['TOTAL LIABILITIES', 'TOTAL CURRENT LIABILITIES (C)', bs.liabilities]);
+    styleTotalRow(rTotLiab, 3, { fillColor: 'FFF5D0FE', textColor: 'FF701A75' });
+    rTotLiab.getCell(3).numFmt = NUMBER_FORMATS.currency;
+    rTotLiab.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
+    wsBs.addRow([]);
 
-    styleHeader(wsAssets);
-    applyBorders(wsAssets);
+    // 4. Partner Capital & Equity
+    const rEqH = wsBs.addRow(['4. EQUITY & CAPITAL', 'PARTNER INVESTMENTS & NET PROFIT SURPLUS', '']);
+    styleSectionHeaderRow(rEqH, 3, '4. PARTNER CAPITAL & ACCUMULATED EQUITY', 'FFFAF5FF', 'FF6B21A8');
 
-    // 3. Security Deposits Register Detail Sheet (Current Assets)
-    const wsDeposits = wb.addWorksheet('Security Deposits Register');
-    wsDeposits.columns = [
-      { header: 'Deposit Category', key: 'cat', width: 32 },
-      { header: 'Payee / Landlord / Authority', key: 'payee', width: 28 },
-      { header: 'Premises / Account / Meter', key: 'premises', width: 26 },
-      { header: 'Date Paid', key: 'date', width: 14 },
-      { header: 'Payment Mode', key: 'mode', width: 22 },
-      { header: 'Agreement / Ref #', key: 'ref', width: 22 },
-      { header: 'Accounting Classification', key: 'class', width: 26 },
-      { header: 'Deposit Amount (Rs)', key: 'amount', width: 18 }
-    ];
-
-    bs.depositTransactions.forEach(t => {
-      wsDeposits.addRow({
-        cat: t.depositDetails?.depositCategory || t.category,
-        payee: t.depositDetails?.payeeName || 'N/A',
-        premises: t.depositDetails?.premisesOrAccount || 'Main Facility',
-        date: t.date,
-        mode: t.paymentMode || 'N/A',
-        ref: t.depositDetails?.referenceNumber || 'N/A',
-        class: 'Refundable Current Asset (Account 1300)',
-        amount: t.amount
-      });
+    Object.entries(bs.partnerCapitalByName).forEach(([pName, pData]) => {
+      const r = wsBs.addRow(['Equity #3010', `Partner Capital Contribution — ${pName} (${pData.count} entries)`, pData.total]);
+      styleDataRow(r, 3, bsRowIdx++ % 2 === 0);
+      r.getCell(3).numFmt = NUMBER_FORMATS.currency;
+      r.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
     });
 
-    wsDeposits.addRow({});
-    wsDeposits.addRow({
-      cat: 'TOTAL SECURITY DEPOSITS PLACED',
-      payee: `${bs.depositTransactions.length} Active Deposits`,
-      premises: '',
-      date: '',
-      mode: '',
-      ref: '',
-      class: 'Current Asset (Account 1300)',
-      amount: bs.totalSecurityDeposits
-    }).font = { bold: true, color: { argb: 'FF0D9488' } };
+    const rTotCap = wsBs.addRow(['Partner Equity', 'Total Paid-In Partner Capital', bs.totalPartnerCapital]);
+    styleDataRow(rTotCap, 3, false);
+    rTotCap.font = { name: 'Calibri', size: 10.5, bold: true, color: { argb: 'FF581C87' } };
+    rTotCap.getCell(3).numFmt = NUMBER_FORMATS.currency;
+    rTotCap.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
 
-    styleHeader(wsDeposits);
-    applyBorders(wsDeposits);
+    const rOpSurplus = wsBs.addRow(['Operating Surplus', 'Operating Surplus (Revenue less Operating Expenses)', bs.operatingSurplus]);
+    styleDataRow(rOpSurplus, 3, true);
+    rOpSurplus.font = { name: 'Calibri', size: 9.5, italic: true, color: { argb: 'FF64748B' } };
+    rOpSurplus.getCell(3).numFmt = NUMBER_FORMATS.currency;
+    rOpSurplus.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
 
-    // 4. Receipts & Payments
-    const wsRp = wb.addWorksheet('Receipts & Payments');
-    wsRp.columns = [
-      { header: 'Account Type', key: 'cat', width: 20 },
-      { header: 'Particulars', key: 'item', width: 40 },
-      { header: 'Amount (Rs)', key: 'amount', width: 18 }
-    ];
-    
-    wsRp.addRow({ cat: 'Receipts', item: 'Tuition Fees', amount: rp.receiptsByCategory['Tuition Fees'] || 0 });
-    Object.entries(rp.receiptsByCategory).filter(([cat]) => cat !== 'Tuition Fees').forEach(([cat, amount]) => {
-      wsRp.addRow({ cat: 'Receipts', item: cat, amount });
+    const rLessDep = wsBs.addRow(['YTD Depreciation', 'Less: Cumulative YTD Depreciation on Fixed Assets', -bs.totalAccumulatedDepreciation]);
+    styleDataRow(rLessDep, 3, true);
+    rLessDep.font = { name: 'Calibri', size: 9.5, italic: true, color: { argb: 'FFDC2626' } };
+    rLessDep.getCell(3).numFmt = NUMBER_FORMATS.currency;
+    rLessDep.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
+
+    const rRetEarn = wsBs.addRow(['Equity #3020', 'Net Profit & Retained Surplus (After YTD Depreciation)', bs.netProfit]);
+    styleDataRow(rRetEarn, 3, false);
+    rRetEarn.font = { name: 'Calibri', size: 10.5, bold: true, color: { argb: 'FF166534' } };
+    rRetEarn.getCell(3).numFmt = NUMBER_FORMATS.currency;
+    rRetEarn.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
+
+    const rTotEq = wsBs.addRow(['TOTAL EQUITY', 'TOTAL PARTNER CAPITAL & ACCUMULATED NET PROFIT (D)', bs.equity]);
+    styleTotalRow(rTotEq, 3, { fillColor: 'FFE9D5FF', textColor: 'FF581C87' });
+    rTotEq.getCell(3).numFmt = NUMBER_FORMATS.currency;
+    rTotEq.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
+    wsBs.addRow([]);
+
+    // Total Liabilities & Equity
+    const rTotLiabEq = wsBs.addRow(['TOTAL LIABILITIES & EQUITY', 'TOTAL LIABILITIES & PARTNER EQUITY (C + D)', bs.liabilities + bs.equity]);
+    styleTotalRow(rTotLiabEq, 3, { fillColor: 'FF10B981', textColor: 'FFFFFFFF' });
+    rTotLiabEq.getCell(3).numFmt = NUMBER_FORMATS.currency;
+    rTotLiabEq.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
+
+    setupSheetViews(wsBs, 5);
+    autoFitWorksheetColumns(wsBs, { 1: 30, 2: 48, 3: 24 });
+
+    // ----------------------------------------------------
+    // SHEET 4: FIXED ASSETS REGISTER DETAIL
+    // ----------------------------------------------------
+    const wsAssets = wb.addWorksheet('Fixed Assets Register', {
+      properties: { tabColor: { argb: 'FF0891B2' } }
     });
-    wsRp.addRow({ cat: 'Receipts', item: 'TOTAL RECEIPTS', amount: rp.totalReceipts }).font = { bold: true };
-    wsRp.addRow({});
-
-    wsRp.addRow({ cat: 'Payments (Operating)', item: '--- OPERATING EXPENSES ---', amount: '' }).font = { bold: true };
-    Object.entries(rp.operatingPaymentsByCategory).forEach(([cat, amount]) => {
-      wsRp.addRow({ cat: 'Operating Payment', item: cat, amount });
+    addExecutiveReportHeader(wsAssets, {
+      title: 'Fixed Assets Register',
+      subtitle: 'CAPITAL ASSETS INVENTORY & AMORTIZATION REGISTER',
+      colSpan: 11,
+      periodLabel: bs.periodLabel,
+      asOfDate: bs.asOfDate
     });
-    wsRp.addRow({ cat: 'Payments (Operating)', item: 'TOTAL OPERATING PAYMENTS', amount: rp.totalOperatingPayments }).font = { bold: true };
-    wsRp.addRow({});
 
-    wsRp.addRow({ cat: 'Payments (Capital)', item: '--- CAPITAL ASSET PURCHASES ---', amount: '' }).font = { bold: true };
-    Object.entries(rp.capitalPaymentsByCategory).forEach(([cat, amount]) => {
-      wsRp.addRow({ cat: 'Capital Payment', item: `Asset: ${cat}`, amount });
-    });
-    wsRp.addRow({ cat: 'Payments (Capital)', item: 'TOTAL CAPITAL ASSET PAYMENTS', amount: rp.totalCapitalPayments }).font = { bold: true };
-    wsRp.addRow({});
-
-    wsRp.addRow({ cat: 'Total Payments', item: 'TOTAL PAYMENTS (Operating + Capital)', amount: rp.totalPayments }).font = { bold: true };
-    wsRp.addRow({ cat: 'Balance', item: 'Closing Bank Balance (Accounts & UPI)', amount: rp.bankBalance }).font = { bold: true, color: { argb: 'FF2563EB' } };
-    wsRp.addRow({ cat: 'Balance', item: 'Closing Cash Balance (Cash in Hand)', amount: rp.cashBalance }).font = { bold: true, color: { argb: 'FF059669' } };
-    wsRp.addRow({ cat: 'Balance', item: 'TOTAL CLOSING CASH & BANK BALANCE', amount: rp.closingBalance }).font = { bold: true, color: { argb: 'FF10B981' } };
-    
-    styleHeader(wsRp);
-    applyBorders(wsRp);
-
-    // 4. Cash Flow Statement
-    const wsCf = wb.addWorksheet('Cash Flow');
-    wsCf.columns = [
-      { header: 'Particulars', key: 'item', width: 44 },
-      { header: 'Amount (Rs)', key: 'amount', width: 20 }
-    ];
-    wsCf.addRows([
-      { item: 'Opening Bank Balance', amount: cf.openingBankBalance },
-      { item: 'Opening Cash in Hand Balance', amount: cf.openingCashBalance },
-      { item: 'Total Opening Balance', amount: cf.openingBalance },
-      { item: 'Operating Inflows via Bank (Fees & Incomes)', amount: cf.bankInflows },
-      { item: 'Operating Inflows via Cash (Physical Cash)', amount: cf.cashInflows },
-      { item: 'Total Operating Cash Inflows', amount: cf.inflows },
-      { item: 'Operating Cash Outflows (Expenses)', amount: cf.operatingOutflows },
-      { item: 'Investing / Capital Outflows (Asset Purchases)', amount: cf.capitalOutflows },
-      { item: 'Total Outflows (Bank & Cash)', amount: cf.totalOutflows },
-      { item: 'Net Bank Flow for Period', amount: cf.netBankFlow },
-      { item: 'Net Cash Flow for Period', amount: cf.netCashFlow },
-      { item: 'Net Total Cash & Bank Flow for Period', amount: cf.netCashFlowTotal },
-      { item: 'Closing Bank Balance', amount: cf.closingBankBalance },
-      { item: 'Closing Cash in Hand Balance', amount: cf.closingCashBalance },
-      { item: 'TOTAL CLOSING CASH & BANK BALANCE', amount: cf.closingBalance }
+    const hAssets = wsAssets.addRow([
+      'Asset Name',
+      'Asset Category',
+      'Acquisition Date',
+      'Cost Value (₹)',
+      'Useful Life (Yrs)',
+      'Monthly Dep (₹)',
+      'Accumulated Dep (₹)',
+      'Net Book Value (₹)',
+      'Location / Room',
+      'Condition',
+      'Serial / Tag No.'
     ]);
-    wsCf.getRow(3).font = { bold: true };
-    wsCf.getRow(6).font = { bold: true };
-    wsCf.getRow(9).font = { bold: true };
-    wsCf.getRow(12).font = { bold: true };
-    wsCf.getRow(13).font = { bold: true, color: { argb: 'FF2563EB' } };
-    wsCf.getRow(14).font = { bold: true, color: { argb: 'FF059669' } };
-    wsCf.getRow(15).font = { bold: true, color: { argb: 'FF10B981' } };
-    styleHeader(wsCf);
-    applyBorders(wsCf);
+    styleHeaderRow(hAssets, 11, EXCEL_COLORS.navyHeader);
+    hAssets.getCell(4).alignment = { horizontal: 'right', vertical: 'middle' };
+    hAssets.getCell(6).alignment = { horizontal: 'right', vertical: 'middle' };
+    hAssets.getCell(7).alignment = { horizontal: 'right', vertical: 'middle' };
+    hAssets.getCell(8).alignment = { horizontal: 'right', vertical: 'middle' };
 
-    // 5. Partner Capital Worksheet
-    const wsPartners = wb.addWorksheet('Partner Capital');
-    wsPartners.columns = [
-      { header: 'Partner Name', key: 'name', width: 26 },
-      { header: 'Date', key: 'date', width: 14 },
-      { header: 'Investment Category', key: 'category', width: 30 },
-      { header: 'Payment Mode', key: 'mode', width: 22 },
-      { header: 'Notes / Reference', key: 'desc', width: 40 },
-      { header: 'Amount (Rs)', key: 'amount', width: 18 }
+    let totalAssetCost = 0;
+    let totalAssetAccumDep = 0;
+    let totalAssetNetBook = 0;
+
+    const depBreakdown = calculateAssetDepreciationBreakdown(bs.assetTransactions, new Date(bs.asOfDate || new Date()));
+    const depMap = new Map(depBreakdown.perAsset.map(p => [p.transaction.id, p]));
+
+    bs.assetTransactions.forEach((t, idx) => {
+      const cost = safeNum(t.amount);
+      const usefulYears = safeNum(t.assetDetails?.usefulLifeYears) || 5;
+      const depInfo = depMap.get(t.id);
+      const accumDep = depInfo?.assetAccumulatedDep || 0;
+      const monthlyDep = depInfo?.monthlyDep || (usefulYears > 0 ? cost / (usefulYears * 12) : 0);
+      const bookVal = Math.max(0, cost - accumDep);
+
+      totalAssetCost += cost;
+      totalAssetAccumDep += accumDep;
+      totalAssetNetBook += bookVal;
+
+      const r = wsAssets.addRow([
+        t.assetDetails?.assetName || t.description || t.category,
+        t.assetDetails?.category || t.category,
+        formatDate(t.date),
+        cost,
+        usefulYears,
+        Math.round(monthlyDep),
+        accumDep,
+        bookVal,
+        t.assetDetails?.locationOrRoom || 'Centre',
+        t.assetDetails?.condition || 'Good',
+        t.assetDetails?.serialNumber || '—'
+      ]);
+      styleDataRow(r, 11, idx % 2 === 0);
+      r.getCell(3).alignment = { horizontal: 'center', vertical: 'middle' };
+      r.getCell(4).numFmt = NUMBER_FORMATS.currency;
+      r.getCell(4).alignment = { horizontal: 'right', vertical: 'middle' };
+      r.getCell(5).alignment = { horizontal: 'center', vertical: 'middle' };
+      r.getCell(6).numFmt = NUMBER_FORMATS.currency;
+      r.getCell(6).alignment = { horizontal: 'right', vertical: 'middle' };
+      r.getCell(7).numFmt = NUMBER_FORMATS.currency;
+      r.getCell(7).alignment = { horizontal: 'right', vertical: 'middle' };
+      r.getCell(8).numFmt = NUMBER_FORMATS.currency;
+      r.getCell(8).alignment = { horizontal: 'right', vertical: 'middle' };
+    });
+
+    const rTotAsset = wsAssets.addRow([
+      'TOTAL CAPITAL ASSETS',
+      `${bs.assetTransactions.length} Asset Items Recorded`,
+      '',
+      totalAssetCost,
+      '',
+      '',
+      totalAssetAccumDep,
+      totalAssetNetBook,
+      '',
+      '',
+      ''
+    ]);
+    styleTotalRow(rTotAsset, 11);
+    rTotAsset.getCell(4).numFmt = NUMBER_FORMATS.currency;
+    rTotAsset.getCell(4).alignment = { horizontal: 'right', vertical: 'middle' };
+    rTotAsset.getCell(7).numFmt = NUMBER_FORMATS.currency;
+    rTotAsset.getCell(7).alignment = { horizontal: 'right', vertical: 'middle' };
+    rTotAsset.getCell(8).numFmt = NUMBER_FORMATS.currency;
+    rTotAsset.getCell(8).alignment = { horizontal: 'right', vertical: 'middle' };
+
+    setupSheetViews(wsAssets, 5);
+    autoFitWorksheetColumns(wsAssets, { 1: 30, 2: 26, 3: 16, 4: 18, 5: 16, 6: 18, 7: 20, 8: 20, 9: 20, 10: 14, 11: 18 });
+
+    // ----------------------------------------------------
+    // SHEET 5: SECURITY DEPOSITS REGISTER
+    // ----------------------------------------------------
+    const wsDeposits = wb.addWorksheet('Security Deposits', {
+      properties: { tabColor: { argb: 'FF0D9488' } }
+    });
+    addExecutiveReportHeader(wsDeposits, {
+      title: 'Security Deposits Register',
+      subtitle: 'REFUNDABLE CURRENT ASSETS (ACCOUNT #1300)',
+      colSpan: 8,
+      periodLabel: bs.periodLabel,
+      asOfDate: bs.asOfDate
+    });
+
+    const hDep = wsDeposits.addRow([
+      'Deposit Category',
+      'Payee / Landlord / Authority',
+      'Premises / Account / Meter',
+      'Date Placed',
+      'Payment Mode',
+      'Agreement / Ref #',
+      'Accounting Classification',
+      'Deposit Amount (₹)'
+    ]);
+    styleHeaderRow(hDep, 8, EXCEL_COLORS.navyHeader);
+    hDep.getCell(8).alignment = { horizontal: 'right', vertical: 'middle' };
+
+    let totalDepositSum = 0;
+    bs.depositTransactions.forEach((t, idx) => {
+      const amt = safeNum(t.amount);
+      totalDepositSum += amt;
+      const r = wsDeposits.addRow([
+        t.depositDetails?.depositCategory || t.category,
+        t.depositDetails?.payeeName || '—',
+        t.depositDetails?.premisesOrAccount || 'Main Facility',
+        formatDate(t.date),
+        t.paymentMode || 'Bank Transfer',
+        t.depositDetails?.referenceNumber || '—',
+        'Current Asset (Account #1300)',
+        amt
+      ]);
+      styleDataRow(r, 8, idx % 2 === 0);
+      r.getCell(4).alignment = { horizontal: 'center', vertical: 'middle' };
+      r.getCell(8).numFmt = NUMBER_FORMATS.currency;
+      r.getCell(8).alignment = { horizontal: 'right', vertical: 'middle' };
+    });
+
+    const rTotDepSum = wsDeposits.addRow([
+      'TOTAL SECURITY DEPOSITS',
+      `${bs.depositTransactions.length} Active Deposits Held`,
+      '',
+      '',
+      '',
+      '',
+      '',
+      totalDepositSum
+    ]);
+    styleTotalRow(rTotDepSum, 8, { fillColor: 'FFCCFBF1', textColor: 'FF115E59' });
+    rTotDepSum.getCell(8).numFmt = NUMBER_FORMATS.currency;
+    rTotDepSum.getCell(8).alignment = { horizontal: 'right', vertical: 'middle' };
+
+    setupSheetViews(wsDeposits, 5);
+    autoFitWorksheetColumns(wsDeposits, { 1: 30, 2: 26, 3: 24, 4: 16, 5: 18, 6: 20, 7: 28, 8: 20 });
+
+    // ----------------------------------------------------
+    // SHEET 6: RECEIPTS & PAYMENTS ACCOUNT
+    // ----------------------------------------------------
+    const wsRp = wb.addWorksheet('Receipts & Payments', {
+      properties: { tabColor: { argb: 'FF059669' } }
+    });
+    addExecutiveReportHeader(wsRp, {
+      title: 'Receipts and Payments Account',
+      subtitle: 'SUMMARY OF CASH & BANK LIQUIDITY MOVEMENTS',
+      colSpan: 4,
+      periodLabel: 'Comprehensive All-Time Liquid Transactions',
+      asOfDate: new Date()
+    });
+
+    const hRp = wsRp.addRow(['Flow Classification', 'Particulars / Account Head', 'Channel Breakdown', 'Amount (₹)']);
+    styleHeaderRow(hRp, 4, EXCEL_COLORS.navyHeader);
+    hRp.getCell(4).alignment = { horizontal: 'right', vertical: 'middle' };
+
+    let rpIdx = 0;
+    // Receipts
+    const rRpH = wsRp.addRow(['RECEIPTS', 'ALL CASH & BANK REVENUE INFLOWS', '', '']);
+    styleSectionHeaderRow(rRpH, 4, 'I. RECEIPTS (FEE COLLECTIONS, OTHER INCOMES & CAPITAL)', 'FFECFDF5', 'FF065F46');
+
+    Object.entries(rp.receiptsByCategory).forEach(([cat, amount]) => {
+      const r = wsRp.addRow(['Receipt Inflow', cat, 'Operating / Financing Receipt', amount]);
+      styleDataRow(r, 4, rpIdx++ % 2 === 0);
+      r.getCell(4).numFmt = NUMBER_FORMATS.currency;
+      r.getCell(4).alignment = { horizontal: 'right', vertical: 'middle' };
+    });
+
+    const rTotRec = wsRp.addRow(['TOTAL RECEIPTS', 'TOTAL INFLOWS RECEIVED (A)', '', rp.totalReceipts]);
+    styleTotalRow(rTotRec, 4, { fillColor: 'FFD1FAE5', textColor: 'FF065F46' });
+    rTotRec.getCell(4).numFmt = NUMBER_FORMATS.currency;
+    rTotRec.getCell(4).alignment = { horizontal: 'right', vertical: 'middle' };
+    wsRp.addRow([]);
+
+    // Operating Payments
+    const rOpPayH = wsRp.addRow(['PAYMENTS', 'OPERATING EXPENSE OUTFLOWS', '', '']);
+    styleSectionHeaderRow(rOpPayH, 4, 'II. PAYMENTS — OPERATING OVERHEADS & EXPENSES', 'FFFEF2F2', 'FF9F1239');
+
+    Object.entries(rp.operatingPaymentsByCategory).forEach(([cat, amount]) => {
+      const r = wsRp.addRow(['Operating Outflow', cat, 'Operational Overhead', amount]);
+      styleDataRow(r, 4, rpIdx++ % 2 === 0);
+      r.getCell(4).numFmt = NUMBER_FORMATS.currency;
+      r.getCell(4).alignment = { horizontal: 'right', vertical: 'middle' };
+    });
+
+    const rTotOpPay = wsRp.addRow(['Subtotal Operating', 'Total Operating Payments', '', rp.totalOperatingPayments]);
+    styleDataRow(rTotOpPay, 4, false);
+    rTotOpPay.font = { name: 'Calibri', size: 10.5, bold: true, color: { argb: 'FF991B1B' } };
+    rTotOpPay.getCell(4).numFmt = NUMBER_FORMATS.currency;
+    rTotOpPay.getCell(4).alignment = { horizontal: 'right', vertical: 'middle' };
+    wsRp.addRow([]);
+
+    // Capital Payments
+    const rCapPayH = wsRp.addRow(['PAYMENTS', 'CAPITAL ASSET & DEPOSIT OUTFLOWS', '', '']);
+    styleSectionHeaderRow(rCapPayH, 4, 'III. PAYMENTS — CAPITAL ASSET PURCHASES & DEPOSITS', 'FFF0FDF4', 'FF166534');
+
+    Object.entries(rp.capitalPaymentsByCategory).forEach(([cat, amount]) => {
+      const r = wsRp.addRow(['Capital Outflow', `Asset: ${cat}`, 'Investing Outflow', amount]);
+      styleDataRow(r, 4, rpIdx++ % 2 === 0);
+      r.getCell(4).numFmt = NUMBER_FORMATS.currency;
+      r.getCell(4).alignment = { horizontal: 'right', vertical: 'middle' };
+    });
+    Object.entries(rp.depositPaymentsByCategory).forEach(([cat, amount]) => {
+      const r = wsRp.addRow(['Deposit Outflow', `Deposit: ${cat}`, 'Current Asset Outflow', amount]);
+      styleDataRow(r, 4, rpIdx++ % 2 === 0);
+      r.getCell(4).numFmt = NUMBER_FORMATS.currency;
+      r.getCell(4).alignment = { horizontal: 'right', vertical: 'middle' };
+    });
+
+    const rTotPay = wsRp.addRow(['TOTAL PAYMENTS', 'TOTAL CASH & BANK PAYMENTS (B)', '', rp.totalPayments]);
+    styleTotalRow(rTotPay, 4, { fillColor: 'FFFEE2E2', textColor: 'FF991B1B' });
+    rTotPay.getCell(4).numFmt = NUMBER_FORMATS.currency;
+    rTotPay.getCell(4).alignment = { horizontal: 'right', vertical: 'middle' };
+    wsRp.addRow([]);
+
+    // Closing Balances
+    const rCloseH = wsRp.addRow(['CLOSING BALANCES', 'CLOSING LIQUID FUNDS', '', '']);
+    styleSectionHeaderRow(rCloseH, 4, 'IV. CLOSING LIQUID BALANCES (A - B + CONTRA TRANSFERS)', 'FFEFF6FF', 'FF1E40AF');
+
+    const rCloseBank = wsRp.addRow(['Closing Liquid', 'Closing Bank Account Balance', 'Accounts, Digital & UPI', rp.bankBalance]);
+    styleDataRow(rCloseBank, 4, false);
+    rCloseBank.font = { name: 'Calibri', size: 10.5, bold: true, color: { argb: 'FF1D4ED8' } };
+    rCloseBank.getCell(4).numFmt = NUMBER_FORMATS.currency;
+    rCloseBank.getCell(4).alignment = { horizontal: 'right', vertical: 'middle' };
+
+    const rCloseCash = wsRp.addRow(['Closing Liquid', 'Closing Physical Cash in Hand Balance', 'Physical Cash Drawer', rp.cashBalance]);
+    styleDataRow(rCloseCash, 4, true);
+    rCloseCash.font = { name: 'Calibri', size: 10.5, bold: true, color: { argb: 'FF047857' } };
+    rCloseCash.getCell(4).numFmt = NUMBER_FORMATS.currency;
+    rCloseCash.getCell(4).alignment = { horizontal: 'right', vertical: 'middle' };
+
+    const rTotClose = wsRp.addRow(['TOTAL CLOSING LIQUIDITY', 'TOTAL CLOSING CASH & BANK FUNDS', 'Total Verified Liquidity', rp.closingBalance]);
+    styleTotalRow(rTotClose, 4, { fillColor: 'FFD1FAE5', textColor: 'FF065F46' });
+    rTotClose.getCell(4).numFmt = NUMBER_FORMATS.currency;
+    rTotClose.getCell(4).alignment = { horizontal: 'right', vertical: 'middle' };
+
+    setupSheetViews(wsRp, 5);
+    autoFitWorksheetColumns(wsRp, { 1: 28, 2: 44, 3: 28, 4: 24 });
+
+    // ----------------------------------------------------
+    // SHEET 7: CASH FLOW STATEMENT
+    // ----------------------------------------------------
+    const wsCf = wb.addWorksheet('Cash Flow', {
+      properties: { tabColor: { argb: 'FF16A34A' } }
+    });
+    addExecutiveReportHeader(wsCf, {
+      title: 'Cash Flow Statement',
+      subtitle: 'STATEMENT OF CASH FLOWS — DIRECT METHOD',
+      colSpan: 3,
+      periodLabel: 'Current Month Activity',
+      asOfDate: new Date()
+    });
+
+    const hCf = wsCf.addRow(['Activity Section', 'Cash Flow Particulars', 'Amount (₹)']);
+    styleHeaderRow(hCf, 3, EXCEL_COLORS.navyHeader);
+    hCf.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
+
+    const cfLines = [
+      { sec: 'Opening Balance', item: 'Opening Bank Account Balance', amt: cf.openingBankBalance },
+      { sec: 'Opening Balance', item: 'Opening Cash in Hand Balance', amt: cf.openingCashBalance },
+      { sec: 'Opening Balance', item: 'TOTAL OPENING CASH & BANK FUNDS', amt: cf.openingBalance, isSub: true },
+      { sec: 'Operating Activities', item: 'Operating Inflows via Bank (Tuition & Fees)', amt: cf.bankInflows },
+      { sec: 'Operating Activities', item: 'Operating Inflows via Cash (Cash Collections)', amt: cf.cashInflows },
+      { sec: 'Operating Activities', item: 'Total Operating Cash Inflows', amt: cf.inflows, isSub: true },
+      { sec: 'Operating Activities', item: 'Operating Cash Outflows (Overheads & Expenses)', amt: -cf.operatingOutflows },
+      { sec: 'Investing Activities', item: 'Investing Outflows (Capital Asset Purchases)', amt: -cf.capitalOutflows },
+      { sec: 'Financing Activities', item: 'Financing Inflows (Partner Capital Inflows)', amt: cf.financingInflows },
+      { sec: 'Contra Transfers', item: 'Internal Cash Deposited to Bank (Contra)', amt: cf.monthCashDepositedToBank },
+      { sec: 'Contra Transfers', item: 'Internal Cash Withdrawn from Bank (Contra)', amt: -cf.monthCashWithdrawnFromBank },
+      { sec: 'Net Flow Summary', item: 'Net Bank Movement for Period', amt: cf.netBankFlow },
+      { sec: 'Net Flow Summary', item: 'Net Physical Cash Movement for Period', amt: cf.netCashFlow },
+      { sec: 'Net Flow Summary', item: 'NET CASH & BANK MOVEMENT FOR PERIOD', amt: cf.netCashFlowTotal, isSub: true },
+      { sec: 'Closing Liquidity', item: 'Closing Bank Balance', amt: cf.closingBankBalance },
+      { sec: 'Closing Liquidity', item: 'Closing Cash in Hand Balance', amt: cf.closingCashBalance },
+      { sec: 'Closing Liquidity', item: 'TOTAL CLOSING CASH & BANK FUNDS', amt: cf.closingBalance, isTotal: true }
     ];
-    bs.partnerInvestments.forEach(t => {
-      wsPartners.addRow({
-        name: t.partnerName || 'Partner',
-        date: t.date,
-        category: t.category,
-        mode: t.paymentMode || 'N/A',
-        desc: t.description || '',
-        amount: t.amount
-      });
-    });
-    wsPartners.addRow({});
-    wsPartners.addRow({
-      name: 'TOTAL PARTNER CAPITAL',
-      date: `${bs.partnerInvestments.length} Contributions`,
-      category: `${Object.keys(bs.partnerCapitalByName).length} Partners`,
-      mode: '',
-      desc: '',
-      amount: bs.totalPartnerCapital
-    });
-    wsPartners.getRow(wsPartners.rowCount).font = { bold: true, color: { argb: 'FF6B21A8' } };
-    styleHeader(wsPartners);
-    applyBorders(wsPartners);
 
-    // 6. All Transactions Detail
-    const wsTx = wb.addWorksheet('All Transactions');
-    wsTx.columns = [
-      { header: 'Date', key: 'date', width: 14 },
-      { header: 'Type', key: 'type', width: 14 },
-      { header: 'Classification', key: 'class', width: 25 },
-      { header: 'Category', key: 'category', width: 28 },
-      { header: 'Description / Payee / Partner', key: 'desc', width: 45 },
-      { header: 'Amount (Rs)', key: 'amount', width: 16 }
-    ];
-    transactions.forEach(t => {
-      const classification = isInvestmentTx(t) 
-        ? `Partner Capital (${t.partnerName || 'Partner'})` 
-        : (isAssetTx(t) ? 'Capital Asset' : (isExpenseTx(t) ? 'Operating Expense' : 'Income'));
-      const desc = isInvestmentTx(t)
-        ? `Partner: ${t.partnerName || 'Partner'}${t.paymentMode ? ` [Mode: ${t.paymentMode}]` : ''} - ${t.description || t.category}`
-        : t.assetDetails?.assetName 
-        ? `${t.assetDetails.assetName} [Loc: ${t.assetDetails.locationOrRoom || 'N/A'}]` 
-        : t.description;
-      wsTx.addRow({ 
-        date: t.date, 
-        type: t.type, 
-        class: classification, 
-        category: t.category, 
-        desc, 
-        amount: t.amount 
-      });
+    cfLines.forEach((l, idx) => {
+      const r = wsCf.addRow([l.sec, l.item, l.amt]);
+      if (l.isTotal) {
+        styleTotalRow(r, 3, { fillColor: 'FFD1FAE5', textColor: 'FF065F46' });
+      } else if (l.isSub) {
+        styleDataRow(r, 3, idx % 2 === 0);
+        r.font = { name: 'Calibri', size: 10.5, bold: true, color: { argb: 'FF1E1B4B' } };
+        r.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E7FF' } };
+      } else {
+        styleDataRow(r, 3, idx % 2 === 0);
+      }
+      r.getCell(3).numFmt = NUMBER_FORMATS.currency;
+      r.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
     });
-    styleHeader(wsTx);
-    applyBorders(wsTx);
 
-    // 7. Chart of Accounts Worksheet
-    const wsCoa = wb.addWorksheet('Chart of Accounts');
-    wsCoa.columns = [
-      { header: 'Account Code', key: 'code', width: 14 },
-      { header: 'Account Name', key: 'name', width: 34 },
-      { header: 'Classification', key: 'type', width: 18 },
-      { header: 'Subtype', key: 'subtype', width: 24 },
-      { header: 'Normal Balance', key: 'normal', width: 16 },
-      { header: 'Status', key: 'status', width: 12 },
-      { header: 'Description / Purpose', key: 'desc', width: 45 }
-    ];
-    accountsList.forEach(a => {
-      wsCoa.addRow({
-        code: a.code,
-        name: a.name,
-        type: a.type,
-        subtype: a.subtype,
-        normal: a.normalBalance,
-        status: a.isActive ? 'Active' : 'Inactive',
-        desc: a.description || ''
-      });
+    setupSheetViews(wsCf, 5);
+    autoFitWorksheetColumns(wsCf, { 1: 26, 2: 44, 3: 24 });
+
+    // ----------------------------------------------------
+    // SHEET 8: STAFF SALARIES & PAYROLL
+    // ----------------------------------------------------
+    const wsSal = wb.addWorksheet('Staff Salaries', {
+      properties: { tabColor: { argb: 'FF7C3AED' } }
     });
-    styleHeader(wsCoa);
-    applyBorders(wsCoa);
+    addExecutiveReportHeader(wsSal, {
+      title: 'Staff Salaries Register',
+      subtitle: 'PAYROLL DISBURSEMENT & OUTSTANDING BALANCES',
+      colSpan: 9,
+      periodLabel: 'Complete Staff Payroll Register',
+      asOfDate: new Date()
+    });
 
+    const hSal = wsSal.addRow([
+      'Staff Name',
+      'Salary Month',
+      'Disbursement Date',
+      'Monthly Salary (₹)',
+      'Amount Paid (₹)',
+      'Advance Paid (₹)',
+      'Balance Due (₹)',
+      'Payment Mode',
+      'Payment Status'
+    ]);
+    styleHeaderRow(hSal, 9, EXCEL_COLORS.navyHeader);
+    hSal.getCell(4).alignment = { horizontal: 'right', vertical: 'middle' };
+    hSal.getCell(5).alignment = { horizontal: 'right', vertical: 'middle' };
+    hSal.getCell(6).alignment = { horizontal: 'right', vertical: 'middle' };
+    hSal.getCell(7).alignment = { horizontal: 'right', vertical: 'middle' };
+
+    let totSalAmount = 0;
+    let totSalPaid = 0;
+    let totSalAdvance = 0;
+    let totSalDue = 0;
+
+    salariesList.forEach((s, idx) => {
+      const salaryAmt = safeNum(s.salaryAmount);
+      const paidAmt = safeNum(s.amountPaid);
+      const advAmt = safeNum(s.advanceAmount);
+      const dueAmt = safeNum(s.balanceDue);
+
+      totSalAmount += salaryAmt;
+      totSalPaid += paidAmt;
+      totSalAdvance += advAmt;
+      totSalDue += dueAmt;
+
+      const r = wsSal.addRow([
+        s.staffName,
+        s.salaryMonth,
+        formatDate(s.paymentDate),
+        salaryAmt,
+        paidAmt,
+        advAmt,
+        dueAmt,
+        s.paymentMode || 'Bank Transfer',
+        s.status
+      ]);
+      styleDataRow(r, 9, idx % 2 === 0);
+      r.getCell(3).alignment = { horizontal: 'center', vertical: 'middle' };
+      r.getCell(4).numFmt = NUMBER_FORMATS.currency;
+      r.getCell(4).alignment = { horizontal: 'right', vertical: 'middle' };
+      r.getCell(5).numFmt = NUMBER_FORMATS.currency;
+      r.getCell(5).alignment = { horizontal: 'right', vertical: 'middle' };
+      r.getCell(6).numFmt = NUMBER_FORMATS.currency;
+      r.getCell(6).alignment = { horizontal: 'right', vertical: 'middle' };
+      r.getCell(7).numFmt = NUMBER_FORMATS.currency;
+      r.getCell(7).alignment = { horizontal: 'right', vertical: 'middle' };
+      r.getCell(9).alignment = { horizontal: 'center', vertical: 'middle' };
+    });
+
+    const rTotSal = wsSal.addRow([
+      'TOTAL STAFF PAYROLL',
+      `${salariesList.length} Salary Records`,
+      '',
+      totSalAmount,
+      totSalPaid,
+      totSalAdvance,
+      totSalDue,
+      '',
+      ''
+    ]);
+    styleTotalRow(rTotSal, 9, { fillColor: 'FFE9D5FF', textColor: 'FF581C87' });
+    rTotSal.getCell(4).numFmt = NUMBER_FORMATS.currency;
+    rTotSal.getCell(4).alignment = { horizontal: 'right', vertical: 'middle' };
+    rTotSal.getCell(5).numFmt = NUMBER_FORMATS.currency;
+    rTotSal.getCell(5).alignment = { horizontal: 'right', vertical: 'middle' };
+    rTotSal.getCell(6).numFmt = NUMBER_FORMATS.currency;
+    rTotSal.getCell(6).alignment = { horizontal: 'right', vertical: 'middle' };
+    rTotSal.getCell(7).numFmt = NUMBER_FORMATS.currency;
+    rTotSal.getCell(7).alignment = { horizontal: 'right', vertical: 'middle' };
+
+    setupSheetViews(wsSal, 5);
+    autoFitWorksheetColumns(wsSal, { 1: 26, 2: 16, 3: 18, 4: 18, 5: 18, 6: 18, 7: 18, 8: 20, 9: 16 });
+
+    // ----------------------------------------------------
+    // SHEET 9: ACCRUALS & OUTSTANDING PAYABLES
+    // ----------------------------------------------------
+    const wsAcc = wb.addWorksheet('Accruals & Payables', {
+      properties: { tabColor: { argb: 'FFD97706' } }
+    });
+    addExecutiveReportHeader(wsAcc, {
+      title: 'Accrued Expenses Register',
+      subtitle: 'UNSETTLED LIABILITIES & ACCRUAL ACCOUNTING LOG',
+      colSpan: 9,
+      periodLabel: 'Complete Accruals Register',
+      asOfDate: new Date()
+    });
+
+    const hAcc = wsAcc.addRow([
+      'Expense Category',
+      'Vendor / Recipient',
+      'Transaction Date',
+      'Due Date',
+      'Accrued Amount (₹)',
+      'Amount Settled (₹)',
+      'Balance Due (₹)',
+      'Settlement Status',
+      'Ledger Account'
+    ]);
+    styleHeaderRow(hAcc, 9, EXCEL_COLORS.navyHeader);
+    hAcc.getCell(5).alignment = { horizontal: 'right', vertical: 'middle' };
+    hAcc.getCell(6).alignment = { horizontal: 'right', vertical: 'middle' };
+    hAcc.getCell(7).alignment = { horizontal: 'right', vertical: 'middle' };
+
+    let totAccAmount = 0;
+    let totAccSettled = 0;
+    let totAccDue = 0;
+
+    accrualsList.forEach((a, idx) => {
+      const amt = safeNum(a.amount);
+      const paid = safeNum(a.paidAmount);
+      const due = safeNum(a.balanceDue);
+
+      totAccAmount += amt;
+      totAccSettled += paid;
+      totAccDue += due;
+
+      const r = wsAcc.addRow([
+        a.category,
+        a.vendorOrRecipient || '—',
+        formatDate(a.transactionDate),
+        formatDate(a.dueDate),
+        amt,
+        paid,
+        due,
+        a.status,
+        a.ledgerAccountCode ? `${a.ledgerAccountCode} - ${a.ledgerAccountName || ''}` : '2010 - Accounts Payable'
+      ]);
+      styleDataRow(r, 9, idx % 2 === 0);
+      r.getCell(3).alignment = { horizontal: 'center', vertical: 'middle' };
+      r.getCell(4).alignment = { horizontal: 'center', vertical: 'middle' };
+      r.getCell(5).numFmt = NUMBER_FORMATS.currency;
+      r.getCell(5).alignment = { horizontal: 'right', vertical: 'middle' };
+      r.getCell(6).numFmt = NUMBER_FORMATS.currency;
+      r.getCell(6).alignment = { horizontal: 'right', vertical: 'middle' };
+      r.getCell(7).numFmt = NUMBER_FORMATS.currency;
+      r.getCell(7).alignment = { horizontal: 'right', vertical: 'middle' };
+      r.getCell(8).alignment = { horizontal: 'center', vertical: 'middle' };
+    });
+
+    const rTotAcc = wsAcc.addRow([
+      'TOTAL ACCRUED LIABILITIES',
+      `${accrualsList.length} Accrual Entries`,
+      '',
+      '',
+      totAccAmount,
+      totAccSettled,
+      totAccDue,
+      '',
+      ''
+    ]);
+    styleTotalRow(rTotAcc, 9, { fillColor: 'FFFEF3C7', textColor: 'FF92400E' });
+    rTotAcc.getCell(5).numFmt = NUMBER_FORMATS.currency;
+    rTotAcc.getCell(5).alignment = { horizontal: 'right', vertical: 'middle' };
+    rTotAcc.getCell(6).numFmt = NUMBER_FORMATS.currency;
+    rTotAcc.getCell(6).alignment = { horizontal: 'right', vertical: 'middle' };
+    rTotAcc.getCell(7).numFmt = NUMBER_FORMATS.currency;
+    rTotAcc.getCell(7).alignment = { horizontal: 'right', vertical: 'middle' };
+
+    setupSheetViews(wsAcc, 5);
+    autoFitWorksheetColumns(wsAcc, { 1: 26, 2: 26, 3: 16, 4: 16, 5: 18, 6: 18, 7: 18, 8: 18, 9: 30 });
+
+    // ----------------------------------------------------
+    // SHEET 10: PARTNER CAPITAL CONTRIBUTIONS
+    // ----------------------------------------------------
+    const wsPartners = wb.addWorksheet('Partner Capital', {
+      properties: { tabColor: { argb: 'FF8B5CF6' } }
+    });
+    addExecutiveReportHeader(wsPartners, {
+      title: 'Partner Capital Register',
+      subtitle: 'EQUITY CONTRIBUTIONS & OWNERSHIP REGISTER',
+      colSpan: 6,
+      periodLabel: bs.periodLabel,
+      asOfDate: bs.asOfDate
+    });
+
+    const hPart = wsPartners.addRow([
+      'Contributing Partner',
+      'Contribution Date',
+      'Investment Category',
+      'Payment Mode',
+      'Transaction Reference / Notes',
+      'Capital Amount (₹)'
+    ]);
+    styleHeaderRow(hPart, 6, EXCEL_COLORS.navyHeader);
+    hPart.getCell(6).alignment = { horizontal: 'right', vertical: 'middle' };
+
+    let totalPartnerSum = 0;
+    bs.partnerInvestments.forEach((t, idx) => {
+      const amt = safeNum(t.amount);
+      totalPartnerSum += amt;
+      const r = wsPartners.addRow([
+        t.partnerName || 'Partner',
+        formatDate(t.date),
+        t.category,
+        t.paymentMode || 'Bank Transfer',
+        t.description || '—',
+        amt
+      ]);
+      styleDataRow(r, 6, idx % 2 === 0);
+      r.getCell(2).alignment = { horizontal: 'center', vertical: 'middle' };
+      r.getCell(6).numFmt = NUMBER_FORMATS.currency;
+      r.getCell(6).alignment = { horizontal: 'right', vertical: 'middle' };
+    });
+
+    const rTotPart = wsPartners.addRow([
+      'TOTAL PARTNER CAPITAL INVESTED',
+      `${bs.partnerInvestments.length} Contributions`,
+      `${Object.keys(bs.partnerCapitalByName).length} Partners`,
+      '',
+      '',
+      totalPartnerSum
+    ]);
+    styleTotalRow(rTotPart, 6, { fillColor: 'FFE9D5FF', textColor: 'FF581C87' });
+    rTotPart.getCell(6).numFmt = NUMBER_FORMATS.currency;
+    rTotPart.getCell(6).alignment = { horizontal: 'right', vertical: 'middle' };
+
+    setupSheetViews(wsPartners, 5);
+    autoFitWorksheetColumns(wsPartners, { 1: 28, 2: 18, 3: 28, 4: 20, 5: 36, 6: 22 });
+
+    // ----------------------------------------------------
+    // SHEET 11: ALL TRANSACTIONS JOURNAL
+    // ----------------------------------------------------
+    const wsTx = wb.addWorksheet('All Transactions', {
+      properties: { tabColor: { argb: 'FF475569' } }
+    });
+    addExecutiveReportHeader(wsTx, {
+      title: 'Financial Transactions Master Journal',
+      subtitle: 'COMPLETE DOUBLE-ENTRY TRANSACTION REPOSITORY',
+      colSpan: 8,
+      periodLabel: 'All Historical Transactions',
+      asOfDate: new Date()
+    });
+
+    const hTx = wsTx.addRow([
+      'Transaction Date',
+      'Voucher / Ref #',
+      'Type',
+      'Classification',
+      'Category',
+      'Payment Mode',
+      'Description / Particulars',
+      'Amount (₹)'
+    ]);
+    styleHeaderRow(hTx, 8, EXCEL_COLORS.navyHeader);
+    hTx.getCell(8).alignment = { horizontal: 'right', vertical: 'middle' };
+
+    let totalTxSum = 0;
+    transactions.forEach((t, idx) => {
+      const amt = safeNum(t.amount);
+      totalTxSum += amt;
+      const classification = isTransferTx(t)
+        ? (isBankToCashTx(t) ? 'Bank to Cash Withdrawal' : 'Cash to Bank Deposit')
+        : (isInvestmentTx(t) 
+          ? `Partner Capital (${t.partnerName || 'Partner'})` 
+          : (isAssetTx(t) ? 'Capital Asset' : (isDepositTx(t) ? 'Security Deposit' : (isExpenseTx(t) ? 'Operating Expense' : 'Operating Income'))));
+
+      const desc = isTransferTx(t)
+        ? `Contra Transfer: ${t.description || t.category}`
+        : (isInvestmentTx(t)
+          ? `Partner: ${t.partnerName || 'Partner'} - ${t.description || t.category}`
+          : t.assetDetails?.assetName 
+          ? `${t.assetDetails.assetName} [Loc: ${t.assetDetails.locationOrRoom || 'N/A'}]` 
+          : t.description);
+
+      const r = wsTx.addRow([
+        formatDate(t.date),
+        t.id ? `TX-${t.id.slice(-6).toUpperCase()}` : '—',
+        t.type,
+        classification,
+        t.category,
+        t.paymentMode || '—',
+        desc,
+        amt
+      ]);
+      styleDataRow(r, 8, idx % 2 === 0);
+      r.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
+      r.getCell(2).alignment = { horizontal: 'center', vertical: 'middle' };
+      r.getCell(3).alignment = { horizontal: 'center', vertical: 'middle' };
+      r.getCell(8).numFmt = NUMBER_FORMATS.currency;
+      r.getCell(8).alignment = { horizontal: 'right', vertical: 'middle' };
+    });
+
+    const rTotTx = wsTx.addRow([
+      'TOTAL TRANSACTIONS LOGGED',
+      `${transactions.length} Records`,
+      '',
+      '',
+      '',
+      '',
+      '',
+      totalTxSum
+    ]);
+    styleTotalRow(rTotTx, 8, { fillColor: 'FFE2E8F0', textColor: 'FF0F172A' });
+    rTotTx.getCell(8).numFmt = NUMBER_FORMATS.currency;
+    rTotTx.getCell(8).alignment = { horizontal: 'right', vertical: 'middle' };
+
+    setupSheetViews(wsTx, 5);
+    autoFitWorksheetColumns(wsTx, { 1: 16, 2: 18, 3: 16, 4: 26, 5: 28, 6: 18, 7: 45, 8: 20 });
+
+    // ----------------------------------------------------
+    // SHEET 12: CHART OF ACCOUNTS (GENERAL LEDGER MASTER)
+    // ----------------------------------------------------
+    const wsCoa = wb.addWorksheet('Chart of Accounts', {
+      properties: { tabColor: { argb: 'FF312E81' } }
+    });
+    addExecutiveReportHeader(wsCoa, {
+      title: 'General Ledger Chart of Accounts',
+      subtitle: 'STANDARD ACCOUNTING CODE STRUCTURE & CLASSIFICATION',
+      colSpan: 7,
+      periodLabel: 'Active Standard Chart of Accounts',
+      asOfDate: new Date()
+    });
+
+    const hCoa = wsCoa.addRow([
+      'Account Code',
+      'Account Title / Name',
+      'Classification',
+      'Account Subtype',
+      'Normal Balance',
+      'Status',
+      'Description / Purpose'
+    ]);
+    styleHeaderRow(hCoa, 7, EXCEL_COLORS.navyHeader);
+
+    accountsList.forEach((a, idx) => {
+      const r = wsCoa.addRow([
+        a.code,
+        a.name,
+        a.type,
+        a.subtype,
+        a.normalBalance,
+        a.isActive ? 'Active' : 'Inactive',
+        a.description || ''
+      ]);
+      styleDataRow(r, 7, idx % 2 === 0);
+      r.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
+      r.getCell(5).alignment = { horizontal: 'center', vertical: 'middle' };
+      r.getCell(6).alignment = { horizontal: 'center', vertical: 'middle' };
+    });
+
+    setupSheetViews(wsCoa, 5);
+    autoFitWorksheetColumns(wsCoa, { 1: 16, 2: 36, 3: 20, 4: 26, 5: 16, 6: 14, 7: 45 });
+
+    // Write buffer and trigger browser download
     const buffer = await wb.xlsx.writeBuffer();
-    saveAs(new Blob([buffer]), `Financial_Reports_${format(new Date(), 'MMM_yyyy')}.xlsx`);
+    const cleanPeriod = bs.periodLabel.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 25);
+    const dateTag = formatDate(new Date()).replace(/\//g, '-');
+    saveAs(new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `LittleBuds_Financial_Statements_${cleanPeriod}_${dateTag}.xlsx`);
+    addToast('success', `Financial statements exported to Excel successfully (${bs.periodLabel})!`);
   };
 
   if (loading) {
@@ -3226,7 +4076,7 @@ const ReportsFinances = () => {
                   onClick={() => setPnlPeriod('ytd')}
                   className={`px-3 py-1.5 rounded-md transition-colors ${pnlPeriod === 'ytd' ? 'bg-white text-indigo-700 font-bold shadow-sm' : 'hover:text-gray-900'}`}
                 >
-                  YTD
+                  YTD (Apr - Mar)
                 </button>
                 <button
                   onClick={() => setPnlPeriod('all_time')}
@@ -4349,6 +5199,113 @@ const ReportsFinances = () => {
       {/* TAB 2: BALANCE SHEET & ASSET REGISTER */}
       {activeTab === 'balance' && (
         <div className="w-full space-y-8">
+          {/* Header & Period Filter Toolbar (Same as in P&L) */}
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 bg-white p-5 rounded-xl border border-gray-200 shadow-sm">
+            <div>
+              <div className="flex items-center space-x-2">
+                <Landmark className="h-5 w-5 text-indigo-600" />
+                <h2 className="text-lg font-bold text-gray-900">Balance Sheet (Financial Position)</h2>
+              </div>
+              <p className="text-xs text-gray-500 mt-1">
+                Period: <span className="font-semibold text-gray-800">{bs.periodLabel}</span> • Cumulative position of liquid assets, receivables, fixed assets, liabilities & partner equity.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
+              <div className="inline-flex bg-gray-100 p-1 rounded-lg text-xs font-medium text-gray-600">
+                <button
+                  type="button"
+                  onClick={() => setBsPeriod('this_month')}
+                  className={`px-3 py-1.5 rounded-md transition-colors ${bsPeriod === 'this_month' ? 'bg-white text-indigo-700 font-bold shadow-sm' : 'hover:text-gray-900'}`}
+                >
+                  This Month
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBsPeriod('last_month')}
+                  className={`px-3 py-1.5 rounded-md transition-colors ${bsPeriod === 'last_month' ? 'bg-white text-indigo-700 font-bold shadow-sm' : 'hover:text-gray-900'}`}
+                >
+                  Last Month
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBsPeriod('this_quarter')}
+                  className={`px-3 py-1.5 rounded-md transition-colors ${bsPeriod === 'this_quarter' ? 'bg-white text-indigo-700 font-bold shadow-sm' : 'hover:text-gray-900'}`}
+                >
+                  Quarter
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBsPeriod('ytd')}
+                  className={`px-3 py-1.5 rounded-md transition-colors ${bsPeriod === 'ytd' ? 'bg-white text-indigo-700 font-bold shadow-sm' : 'hover:text-gray-900'}`}
+                >
+                  YTD (Apr - Mar)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBsPeriod('all_time')}
+                  className={`px-3 py-1.5 rounded-md transition-colors ${bsPeriod === 'all_time' ? 'bg-white text-indigo-700 font-bold shadow-sm' : 'hover:text-gray-900'}`}
+                >
+                  All Time
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBsPeriod('custom')}
+                  className={`px-3 py-1.5 rounded-md transition-colors ${bsPeriod === 'custom' ? 'bg-white text-indigo-700 font-bold shadow-sm' : 'hover:text-gray-900'}`}
+                >
+                  Custom
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleExportExcel}
+                className="inline-flex items-center px-3 py-1.5 border border-indigo-200 rounded-lg text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 shadow-sm transition-colors"
+                title="Export Financial Statements to Excel"
+              >
+                <Download className="w-3.5 h-3.5 mr-1 text-indigo-600" />
+                Export to Excel
+              </button>
+              <button
+                type="button"
+                onClick={() => window.print()}
+                className="inline-flex items-center px-3 py-1.5 border border-gray-300 rounded-lg text-xs font-medium text-gray-700 bg-white hover:bg-gray-50 shadow-sm"
+                title="Print Balance Sheet"
+              >
+                <Printer className="w-3.5 h-3.5 mr-1 text-gray-500" />
+                Print
+              </button>
+            </div>
+          </div>
+
+          {/* Custom Date Range Picker when active */}
+          {bsPeriod === 'custom' && (
+            <div className="bg-indigo-50/50 p-4 rounded-xl border border-indigo-100 flex flex-wrap items-center gap-4 text-sm">
+              <span className="font-semibold text-indigo-900 flex items-center">
+                <Calendar className="w-4 h-4 mr-1.5 text-indigo-600" />
+                Select Custom Date Range:
+              </span>
+              <div className="flex items-center space-x-2">
+                <label className="text-xs text-gray-600">From:</label>
+                <input
+                  type="date"
+                  value={bsCustomStart}
+                  onChange={(e) => setBsCustomStart(e.target.value)}
+                  className="border border-gray-300 rounded-md px-2.5 py-1 text-xs bg-white focus:ring-1 focus:ring-indigo-500"
+                />
+              </div>
+              <div className="flex items-center space-x-2">
+                <label className="text-xs text-gray-600">To:</label>
+                <input
+                  type="date"
+                  value={bsCustomEnd}
+                  onChange={(e) => setBsCustomEnd(e.target.value)}
+                  className="border border-gray-300 rounded-md px-2.5 py-1 text-xs bg-white focus:ring-1 focus:ring-indigo-500"
+                />
+              </div>
+            </div>
+          )}
+
           {/* Top KPI Cards - 4 Columns for Complete Liquidity & Asset Overview */}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
             {/* Card 1: Bank Balance */}
@@ -4429,7 +5386,7 @@ const ReportsFinances = () => {
               </div>
               <h2 className="text-2xl font-extrabold text-gray-900">STATEMENT OF FINANCIAL POSITION</h2>
               <p className="text-xs text-gray-500 mt-1 uppercase tracking-widest font-semibold">
-                Little Buds Child Care Centre • As of {formatDate(new Date())}
+                Little Buds Child Care Centre • {bs.periodLabel}
               </p>
             </div>
             
@@ -4608,9 +5565,26 @@ const ReportsFinances = () => {
                             ))
                           )}
                           <tr className="bg-indigo-50/70 font-bold text-xs text-indigo-950">
-                            <td className="py-2 px-2">Subtotal Fixed Capital Assets</td>
+                            <td className="py-2 px-2">Gross Fixed Capital Assets (At Cost)</td>
                             <td className="py-2 px-2 text-right text-indigo-700 font-mono tabular-nums">
                               ₹{bs.totalFixedAssets.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </td>
+                          </tr>
+                          {bs.totalAccumulatedDepreciation > 0 && (
+                            <tr className="text-xs text-rose-800 bg-rose-50/40">
+                              <td className="py-1.5 px-2 pl-4">
+                                <span className="font-semibold">Less: Accumulated Depreciation (Contra Asset #1600)</span>
+                                <span className="block text-[10px] text-gray-500">Cumulative amortization across Indian Financial Years to date</span>
+                              </td>
+                              <td className="py-1.5 px-2 text-right font-mono font-medium text-rose-700 tabular-nums">
+                                -₹{bs.totalAccumulatedDepreciation.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </td>
+                            </tr>
+                          )}
+                          <tr className="bg-indigo-100/70 font-bold text-xs text-indigo-950 border-t border-indigo-200">
+                            <td className="py-2 px-2">Net Fixed Assets (Book Value)</td>
+                            <td className="py-2 px-2 text-right text-indigo-900 font-mono tabular-nums">
+                              ₹{bs.netFixedAssets.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                             </td>
                           </tr>
                         </tbody>
@@ -4623,7 +5597,7 @@ const ReportsFinances = () => {
                 <div className="mt-6 bg-indigo-900 text-white rounded-xl p-4 flex justify-between items-center shadow-md">
                   <div>
                     <span className="font-extrabold text-sm tracking-wider uppercase block">TOTAL ASSETS</span>
-                    <span className="text-[11px] text-indigo-200 font-normal">Current Assets + Fixed Capital Equipment</span>
+                    <span className="text-[11px] text-indigo-200 font-normal">Current Assets + Net Fixed Capital Assets (After YTD Depreciation)</span>
                   </div>
                   <span className="font-extrabold text-xl font-mono tabular-nums">
                     ₹{bs.totalAssets.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -4661,17 +5635,21 @@ const ReportsFinances = () => {
                         <tbody className="divide-y divide-gray-100">
                           <tr className="hover:bg-gray-50 transition-colors">
                             <td className="py-2.5 px-2 text-gray-700">
-                              <span className="font-medium text-xs sm:text-sm text-gray-800">Current Liabilities & Trade Payables</span>
-                              <p className="text-[11px] text-gray-400">Vendor payables & short-term obligations</p>
+                              <span className="font-medium text-xs sm:text-sm text-gray-800">Accounts Payable (Unsettled Accruals #2010)</span>
+                              <p className="text-[11px] text-gray-400">Vendor accruals & unsettled operating obligations</p>
                             </td>
-                            <td className="py-2.5 px-2 text-right font-mono font-medium text-gray-900 tabular-nums">₹0.00</td>
+                            <td className="py-2.5 px-2 text-right font-mono font-medium text-gray-900 tabular-nums">
+                              ₹{bs.accountsPayable.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </td>
                           </tr>
                           <tr className="hover:bg-gray-50 transition-colors">
                             <td className="py-2.5 px-2 text-gray-700">
-                              <span className="font-medium text-xs sm:text-sm text-gray-800">Long-term Debt & Bank Loans</span>
-                              <p className="text-[11px] text-gray-400">Term borrowings & equipment finance</p>
+                              <span className="font-medium text-xs sm:text-sm text-gray-800">Accrued Staff Salaries (#2030)</span>
+                              <p className="text-[11px] text-gray-400">Unpaid payroll & staff salary balances</p>
                             </td>
-                            <td className="py-2.5 px-2 text-right font-mono font-medium text-gray-900 tabular-nums">₹0.00</td>
+                            <td className="py-2.5 px-2 text-right font-mono font-medium text-gray-900 tabular-nums">
+                              ₹{bs.accruedSalaries.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </td>
                           </tr>
                           <tr className="bg-gray-100/90 font-bold text-xs text-gray-900">
                             <td className="py-2 px-2">Total Liabilities</td>
@@ -4701,7 +5679,7 @@ const ReportsFinances = () => {
                             <>
                               <tr className="bg-purple-50/50">
                                 <td className="py-2.5 px-2 text-purple-950 font-semibold">
-                                  <div className="text-xs sm:text-sm font-bold">Total Partner Capital Contributions</div>
+                                  <div className="text-xs sm:text-sm font-bold">Total Partner Capital Contributions (#3010)</div>
                                   <span className="text-[11px] text-purple-700 font-normal">
                                     {Object.keys(bs.partnerCapitalByName).length} active contributing partner(s)
                                   </span>
@@ -4724,22 +5702,32 @@ const ReportsFinances = () => {
                               ))}
                               <tr className="hover:bg-gray-50 transition-colors">
                                 <td className="py-2.5 px-2 text-gray-700">
-                                  <div className="text-xs sm:text-sm font-medium text-gray-800">Retained Operational Reserves & Surplus</div>
-                                  <span className="text-[11px] text-gray-400">Accumulated operating surplus from child care centre operations</span>
+                                  <div className="text-xs sm:text-sm font-bold text-gray-900">Net Profit & Accumulated Surplus (Account #3020)</div>
+                                  <span className="text-[11px] text-gray-500 block">
+                                    Cumulative net earnings after deducting YTD accumulated depreciation
+                                  </span>
+                                  <span className="text-[10px] text-indigo-700 font-mono font-semibold">
+                                    (Operating Surplus ₹{bs.operatingSurplus.toLocaleString('en-IN', { maximumFractionDigits: 0 })} − YTD Dep. ₹{bs.totalAccumulatedDepreciation.toLocaleString('en-IN', { maximumFractionDigits: 0 })})
+                                  </span>
                                 </td>
-                                <td className="py-2.5 px-2 text-right font-mono font-medium text-gray-900 tabular-nums">
-                                  ₹{bs.retainedEarnings.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                <td className={`py-2.5 px-2 text-right font-mono font-bold tabular-nums ${bs.netProfit >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                                  ₹{bs.netProfit.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                 </td>
                               </tr>
                             </>
                           ) : (
                             <tr className="hover:bg-gray-50 transition-colors">
                               <td className="py-2.5 px-2 text-gray-700">
-                                <div className="text-xs sm:text-sm font-medium text-gray-800">General Fund & Capital Reserves</div>
-                                <span className="text-[11px] text-gray-400">Owner's equity and retained centre assets</span>
+                                <div className="text-xs sm:text-sm font-bold text-gray-900">Net Profit & Accumulated Surplus (Account #3020)</div>
+                                <span className="text-[11px] text-gray-500 block">
+                                  Retained net earnings after deducting YTD accumulated depreciation
+                                </span>
+                                <span className="text-[10px] text-indigo-700 font-mono font-semibold">
+                                  (Operating Surplus ₹{bs.operatingSurplus.toLocaleString('en-IN', { maximumFractionDigits: 0 })} − YTD Dep. ₹{bs.totalAccumulatedDepreciation.toLocaleString('en-IN', { maximumFractionDigits: 0 })})
+                                </span>
                               </td>
-                              <td className="py-2.5 px-2 text-right font-mono font-medium text-gray-900 tabular-nums">
-                                ₹{bs.equity.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              <td className={`py-2.5 px-2 text-right font-mono font-bold tabular-nums ${bs.netProfit >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                                ₹{bs.netProfit.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                               </td>
                             </tr>
                           )}
@@ -5902,7 +6890,9 @@ const ReportsFinances = () => {
             cashBalance: rp.cashBalance,
             totalReceipts: rp.totalReceipts,
             totalPayments: rp.totalPayments,
-            depreciationTotal: bs.totalFixedAssets > 0 ? (pnl.totalDepreciation || 0) : 0
+            depreciationTotal: bs.totalFixedAssets > 0 ? (pnl.totalDepreciation || 0) : 0,
+            accumulatedDepreciationTotal: bs.totalAccumulatedDepreciation,
+            depreciationExpenseYTD: bs.currentFYDepreciationYTD
           }}
           onAccountsUpdated={loadAccounts}
           onViewLedger={(acc) => {

@@ -19,20 +19,28 @@ import {
   FileText
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
+import { saveAs } from 'file-saver';
+import { formatDate } from '../utils/dateUtils';
+import {
+  EXCEL_COLORS,
+  NUMBER_FORMATS,
+  addExecutiveReportHeader,
+  styleHeaderRow,
+  styleDataRow,
+  styleSectionHeaderRow,
+  styleTotalRow,
+  autoFitWorksheetColumns,
+  setupSheetViews
+} from '../utils/excelFormatters';
 import { ChartOfAccountItem, AccountType, AccountNormalBalance, FinanceTransaction, Fee } from '../types';
-import { addChartOfAccount, updateChartOfAccount, deleteChartOfAccount, calculateAccountLedgerBalances, DEFAULT_CHART_OF_ACCOUNTS } from '../services/chartOfAccountsService';
+import { addChartOfAccount, updateChartOfAccount, deleteChartOfAccount, calculateAccountLedgerBalances, DEFAULT_CHART_OF_ACCOUNTS, LiquidBalancesStats } from '../services/chartOfAccountsService';
 
 interface ChartOfAccountsViewProps {
   accounts: ChartOfAccountItem[];
   transactions: FinanceTransaction[];
   fees: Fee[];
-  liquidStats: {
-    bankBalance: number;
-    cashBalance: number;
-    totalReceipts: number;
-    totalPayments: number;
-    depreciationTotal: number;
-  };
+  liquidStats: LiquidBalancesStats;
   onAccountsUpdated: () => void;
   onRecordTransactionForAccount?: (account: ChartOfAccountItem) => void;
   onViewLedger?: (account: ChartOfAccountItem) => void;
@@ -316,27 +324,108 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
     }
   };
 
-  const handleExportCOA = () => {
-    const exportData = filteredAccounts.map(a => {
-      const liveData = accountBalances[a.code] || { balance: 0, entryCount: 0 };
-      return {
-        'Account Code': a.code,
-        'Account Name': a.name,
-        'Classification': a.type,
-        'Subtype': a.subtype,
-        'Normal Balance': a.normalBalance,
-        'Live Balance (₹)': liveData.balance,
-        'Transactions / Entries': liveData.entryCount,
-        'Status': a.isActive ? 'Active' : 'Inactive',
-        'Description': a.description || ''
-      };
-    });
+  const handleExportCOA = async () => {
+    try {
+      const wb = new ExcelJS.Workbook();
+      wb.creator = 'Little Buds Child Care Centre';
+      wb.created = new Date();
 
-    const worksheet = XLSX.utils.json_to_sheet(exportData);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Chart of Accounts');
-    XLSX.writeFile(workbook, `LittleBuds_Chart_of_Accounts_${new Date().toISOString().split('T')[0]}.xlsx`);
-    showToast('Chart of Accounts exported to Excel successfully.');
+      const ws = wb.addWorksheet('Chart of Accounts', {
+        properties: { tabColor: { argb: 'FF312E81' } }
+      });
+
+      addExecutiveReportHeader(ws, {
+        title: 'Chart of Accounts Register',
+        subtitle: 'GENERAL LEDGER MASTER CODE SCHEDULE & BALANCES',
+        colSpan: 8,
+        periodLabel: `Filter: ${selectedType} | Showing ${filteredAccounts.length} of ${accounts.length} Accounts`,
+        asOfDate: new Date()
+      });
+
+      const hRow = ws.addRow([
+        'Account Code',
+        'Account Title / Name',
+        'Classification',
+        'Account Subtype',
+        'Normal Balance',
+        'Live Balance (₹)',
+        'Entries Count',
+        'Status'
+      ]);
+      styleHeaderRow(hRow, 8, EXCEL_COLORS.navyHeader);
+      hRow.getCell(6).alignment = { horizontal: 'right', vertical: 'middle' };
+      hRow.getCell(7).alignment = { horizontal: 'center', vertical: 'middle' };
+
+      const types: AccountType[] = ['Asset', 'Liability', 'Equity', 'Revenue', 'Expense'];
+      let rowIdx = 0;
+      let grandTotalBalance = 0;
+      let grandTotalEntries = 0;
+
+      types.forEach(type => {
+        const typeAccounts = filteredAccounts.filter(a => a.type === type);
+        if (typeAccounts.length === 0) return;
+
+        let typeBg = 'FFEFF6FF';
+        let typeText = 'FF1E40AF';
+        if (type === 'Liability') { typeBg = 'FFFDF4FF'; typeText = 'FF86198F'; }
+        else if (type === 'Equity') { typeBg = 'FFFAF5FF'; typeText = 'FF6B21A8'; }
+        else if (type === 'Revenue') { typeBg = 'FFECFDF5'; typeText = 'FF065F46'; }
+        else if (type === 'Expense') { typeBg = 'FFFEF2F2'; typeText = 'FF9F1239'; }
+
+        const sRow = ws.addRow([`CLASSIFICATION: ${type.toUpperCase()}S`, '', '', '', '', '', '', '']);
+        styleSectionHeaderRow(sRow, 8, `CLASSIFICATION: ${type.toUpperCase()} ACCOUNTS`, typeBg, typeText);
+
+        typeAccounts.forEach(a => {
+          const liveData = accountBalances[a.code] || { balance: 0, entryCount: 0 };
+          grandTotalBalance += liveData.balance;
+          grandTotalEntries += liveData.entryCount;
+
+          const r = ws.addRow([
+            a.code,
+            a.name,
+            a.type,
+            a.subtype,
+            a.normalBalance,
+            liveData.balance,
+            liveData.entryCount,
+            a.isActive ? 'Active' : 'Inactive'
+          ]);
+          styleDataRow(r, 8, rowIdx++ % 2 === 0);
+          r.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
+          r.getCell(5).alignment = { horizontal: 'center', vertical: 'middle' };
+          r.getCell(6).numFmt = NUMBER_FORMATS.currency;
+          r.getCell(6).alignment = { horizontal: 'right', vertical: 'middle' };
+          r.getCell(7).alignment = { horizontal: 'center', vertical: 'middle' };
+          r.getCell(8).alignment = { horizontal: 'center', vertical: 'middle' };
+        });
+      });
+
+      const totRow = ws.addRow([
+        'TOTAL / SUMMARY',
+        `${filteredAccounts.length} Filtered Accounts`,
+        '',
+        '',
+        '',
+        grandTotalBalance,
+        grandTotalEntries,
+        ''
+      ]);
+      styleTotalRow(totRow, 8, { fillColor: 'FFE2E8F0', textColor: 'FF0F172A' });
+      totRow.getCell(6).numFmt = NUMBER_FORMATS.currency;
+      totRow.getCell(6).alignment = { horizontal: 'right', vertical: 'middle' };
+      totRow.getCell(7).alignment = { horizontal: 'center', vertical: 'middle' };
+
+      setupSheetViews(ws, 5);
+      autoFitWorksheetColumns(ws, { 1: 16, 2: 38, 3: 18, 4: 26, 5: 16, 6: 22, 7: 16, 8: 14 });
+
+      const buffer = await wb.xlsx.writeBuffer();
+      const dateTag = formatDate(new Date()).replace(/\//g, '-');
+      saveAs(new Blob([buffer]), `LittleBuds_Chart_of_Accounts_${dateTag}.xlsx`);
+      showToast('Chart of Accounts exported to Excel successfully.');
+    } catch (err) {
+      console.error('Failed to export COA:', err);
+      showToast('Failed to export Chart of Accounts.');
+    }
   };
 
   return (

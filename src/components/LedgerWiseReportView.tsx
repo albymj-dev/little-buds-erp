@@ -30,7 +30,8 @@ import {
   generateAccountLedgerReport,
   generateMasterLedgerSummary,
   exportSingleLedgerToExcel,
-  exportMasterLedgerToExcel
+  exportMasterLedgerToExcel,
+  getIndianFYInfo
 } from '../services/ledgerService';
 import { DEFAULT_CHART_OF_ACCOUNTS } from '../services/chartOfAccountsService';
 import { format, startOfMonth, endOfMonth, subMonths } from 'date-fns';
@@ -113,22 +114,18 @@ export const LedgerWiseReportView: React.FC<LedgerWiseReportViewProps> = ({
         periodLabel: format(last, 'MMMM yyyy')
       };
     } else if (period === 'this_quarter') {
-      const qStartMonth = Math.floor(now.getMonth() / 3) * 3;
-      const qStart = new Date(now.getFullYear(), qStartMonth, 1);
-      const qEnd = endOfMonth(new Date(now.getFullYear(), qStartMonth + 2, 1));
+      const fyInfo = getIndianFYInfo(now);
       return {
-        startDate: format(qStart, 'yyyy-MM-dd'),
-        endDate: format(qEnd, 'yyyy-MM-dd'),
-        periodLabel: `Q${Math.floor(now.getMonth() / 3) + 1} ${now.getFullYear()}`
+        startDate: fyInfo.quarterStartDate,
+        endDate: fyInfo.quarterEndDate > format(now, 'yyyy-MM-dd') ? format(now, 'yyyy-MM-dd') : fyInfo.quarterEndDate,
+        periodLabel: `${fyInfo.quarterLabel} (Indian FY)`
       };
     } else if (period === 'ytd') {
-      const fyStart = now.getMonth() >= 3
-        ? new Date(now.getFullYear(), 3, 1)
-        : new Date(now.getFullYear() - 1, 3, 1);
+      const fyInfo = getIndianFYInfo(now);
       return {
-        startDate: format(fyStart, 'yyyy-MM-dd'),
-        endDate: format(now, 'yyyy-MM-dd'),
-        periodLabel: `FY ${fyStart.getFullYear()}-${fyStart.getFullYear() + 1} (YTD)`
+        startDate: fyInfo.fyStartDate,
+        endDate: fyInfo.fyEndDate,
+        periodLabel: `${fyInfo.fyLabel} (Cumulative: Apr ${fyInfo.fyStartYear} - Mar ${fyInfo.fyEndYear})`
       };
     } else if (period === 'custom') {
       return {
@@ -328,7 +325,7 @@ export const LedgerWiseReportView: React.FC<LedgerWiseReportViewProps> = ({
               { key: 'this_month', label: 'This Month' },
               { key: 'last_month', label: 'Last Month' },
               { key: 'this_quarter', label: 'Quarter' },
-              { key: 'ytd', label: 'FY YTD' },
+              { key: 'ytd', label: 'FY YTD (Apr - Mar)' },
               { key: 'all_time', label: 'All Time' },
               { key: 'custom', label: 'Custom' }
             ].map(p => (
@@ -867,8 +864,8 @@ export const LedgerWiseReportView: React.FC<LedgerWiseReportViewProps> = ({
             <div id="printable-ledger-area" className="flex-1 overflow-y-auto p-4 space-y-4 my-2 text-xs">
               {/* Header */}
               <div className="text-center border-b pb-4">
-                <h1 className="text-xl font-black text-gray-900 uppercase tracking-wide">
-                  LITTLE BUDS CHILD CARE & LEARNING CENTRE
+                <h1 className="text-xl font-black text-gray-900 tracking-wide">
+                  Little Buds Child Care Centre
                 </h1>
                 <p className="text-gray-500 text-xs">
                   Official Book of Accounts • General Ledger Statement

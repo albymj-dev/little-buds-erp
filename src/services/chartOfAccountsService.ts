@@ -10,8 +10,20 @@ import {
   isInvestmentTx,
   isAssetTx,
   isExpenseTx,
-  isIncomeTx
+  isIncomeTx,
+  calculateAssetDepreciationBreakdown,
+  getIndianFYInfo
 } from './ledgerService';
+
+export interface LiquidBalancesStats {
+  bankBalance: number;
+  cashBalance: number;
+  totalReceipts: number;
+  totalPayments: number;
+  depreciationTotal: number;
+  accumulatedDepreciationTotal?: number;
+  depreciationExpenseYTD?: number;
+}
 
 export const DEFAULT_CHART_OF_ACCOUNTS: Omit<ChartOfAccountItem, 'id'>[] = [
   // 1000 - ASSETS
@@ -368,6 +380,72 @@ export const DEFAULT_CHART_OF_ACCOUNTS: Omit<ChartOfAccountItem, 'id'>[] = [
     isSystem: true,
     isActive: true,
     linkedCategory: 'Depreciation'
+  },
+  {
+    code: '5130',
+    name: 'Taxi & General Conveyance',
+    type: 'Expense',
+    subtype: 'Conveyance',
+    normalBalance: 'Debit',
+    description: 'Local travel, cab fare, auto-rickshaw, fuel, and staff/errand conveyance',
+    isSystem: true,
+    isActive: true,
+    linkedCategory: 'Taxi & General Conveyance'
+  },
+  {
+    code: '5140',
+    name: 'Documentation & Registration',
+    type: 'Expense',
+    subtype: 'Administrative',
+    normalBalance: 'Debit',
+    description: 'Licensing, official registrations, legal documentation, stamp duty, certificates and filing fees',
+    isSystem: true,
+    isActive: true,
+    linkedCategory: 'Documentation & Registration'
+  },
+  {
+    code: '5150',
+    name: 'Stationary Expenses',
+    type: 'Expense',
+    subtype: 'Administrative',
+    normalBalance: 'Debit',
+    description: 'Centre office stationery, notebooks, registers, pens, markers, and administrative paper supplies',
+    isSystem: true,
+    isActive: true,
+    linkedCategory: 'Stationary Expenses'
+  },
+  {
+    code: '5160',
+    name: 'Mobile & Internet Expenses',
+    type: 'Expense',
+    subtype: 'Utilities',
+    normalBalance: 'Debit',
+    description: 'Official centre mobile recharges, staff communication sim cards, broadband internet and data plans',
+    isSystem: true,
+    isActive: true,
+    linkedCategory: 'Mobile & Internet Expenses'
+  },
+  {
+    code: '5170',
+    name: 'Canteen Expenses',
+    type: 'Expense',
+    subtype: 'Nutrition',
+    normalBalance: 'Debit',
+    description: 'Staff canteen supplies, kitchen groceries, meal provisions, and cooking essentials',
+    isSystem: true,
+    isActive: true,
+    linkedCategory: 'Canteen Expenses'
+  },
+  {
+    code: '5180',
+    name: 'Refreshment Expenses',
+    type: 'Expense',
+    subtype: 'Nutrition',
+    normalBalance: 'Debit',
+    description: 'Beverages, tea, coffee, meeting snacks, visitor refreshments, and event refreshments',
+    isSystem: true,
+    isActive: true,
+    linkedCategory: 'Refreshment Expenses'
   }
 ];
 
@@ -516,7 +594,7 @@ export const calculateAccountLedgerBalances = (
   accounts: ChartOfAccountItem[],
   transactions: FinanceTransaction[],
   fees: Fee[],
-  liquidStats: { bankBalance: number; cashBalance: number; totalReceipts: number; totalPayments: number; depreciationTotal: number }
+  liquidStats: LiquidBalancesStats
 ): Record<string, { balance: number; debitTotal: number; creditTotal: number; entryCount: number }> => {
   const result: Record<string, { balance: number; debitTotal: number; creditTotal: number; entryCount: number }> = {};
 
@@ -564,10 +642,16 @@ export const calculateAccountLedgerBalances = (
   
   const assetCategoryToCode: Record<string, string> = {
     'Therapy & Sensory Equipment': '1510',
+    'Learning & Play Equipment': '1510',
+    'Play & Learning Equipment': '1510',
     'Furniture & Fixtures': '1520',
+    'Classroom Furniture & Fixtures': '1520',
     'IT & Electronics': '1530',
+    'IT & Electronic Hardware': '1530',
     'Assessment Kits': '1540',
-    'Facility Improvements': '1550'
+    'Child Development & Learning Kits': '1540',
+    'Facility Improvements': '1550',
+    'Facility & Safety Infrastructure': '1550'
   };
 
   assetTransactions.forEach(tx => {
@@ -580,10 +664,19 @@ export const calculateAccountLedgerBalances = (
     }
   });
 
-  // 1600 - Accumulated Depreciation
+  // Accurate depreciation breakdown aligned with Indian Financial Year
+  const depBreakdown = calculateAssetDepreciationBreakdown(assetTransactions, new Date());
+  const finalAccumDep = liquidStats.accumulatedDepreciationTotal !== undefined
+    ? liquidStats.accumulatedDepreciationTotal
+    : depBreakdown.totalAccumulatedDepreciation;
+  const finalDepExpenseYTD = liquidStats.depreciationExpenseYTD !== undefined
+    ? liquidStats.depreciationExpenseYTD
+    : depBreakdown.currentFYDepreciationYTD;
+
+  // 1600 - Accumulated Depreciation (Contra Asset - All time cumulative across Indian FYs)
   if (result['1600']) {
-    result['1600'].balance = liquidStats.depreciationTotal;
-    result['1600'].creditTotal = liquidStats.depreciationTotal;
+    result['1600'].balance = finalAccumDep;
+    result['1600'].creditTotal = finalAccumDep;
     result['1600'].entryCount = assetTransactions.length;
   }
 
@@ -672,7 +765,21 @@ export const calculateAccountLedgerBalances = (
     'Software & Subscriptions': '5080',
     'Training': '5090',
     'Staff Welfare & Training': '5090',
-    'Bank Charges': '5100'
+    'Bank Charges': '5100',
+    'Taxi & General Conveyance': '5130',
+    'Conveyance': '5130',
+    'Documentation & Registration': '5140',
+    'Registration': '5140',
+    'Stationary Expenses': '5150',
+    'Stationery Expenses': '5150',
+    'Stationary': '5150',
+    'Stationery': '5150',
+    'Mobile & Internet Expenses': '5160',
+    'Mobile & Internet': '5160',
+    'Canteen Expenses': '5170',
+    'Canteen': '5170',
+    'Refreshment Expenses': '5180',
+    'Refreshments': '5180'
   };
 
   expenseTransactions.forEach(tx => {
@@ -684,10 +791,10 @@ export const calculateAccountLedgerBalances = (
     }
   });
 
-  // 5120 - Depreciation Expense
+  // 5120 - Depreciation Expense (Current Indian Financial Year YTD)
   if (result['5120']) {
-    result['5120'].balance = liquidStats.depreciationTotal;
-    result['5120'].debitTotal = liquidStats.depreciationTotal;
+    result['5120'].balance = finalDepExpenseYTD;
+    result['5120'].debitTotal = finalDepExpenseYTD;
     result['5120'].entryCount = assetTransactions.length;
   }
 

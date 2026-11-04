@@ -384,11 +384,14 @@ const AttendanceTracker = () => {
       // Group by student
       const dataByStudent: Record<string, any> = {};
 
-      // Get all dates in the month for headers
-      const daysInMonth: string[] = [];
+      // Get all dates in the month for headers (formatted as DD/MM/YYYY)
+      const daysInMonth: { key: string; label: string }[] = [];
       let currentDay = new Date(monthStart);
       while (currentDay <= monthEnd) {
-        daysInMonth.push(format(currentDay, 'yyyy-MM-dd'));
+        daysInMonth.push({
+          key: format(currentDay, 'yyyy-MM-dd'),
+          label: format(currentDay, 'dd/MM/yyyy')
+        });
         currentDay.setDate(currentDay.getDate() + 1);
       }
 
@@ -401,7 +404,7 @@ const AttendanceTracker = () => {
         };
         // Initialize all days to empty
         daysInMonth.forEach(day => {
-          studentRecord[day] = '-';
+          studentRecord[day.label] = '-';
         });
         dataByStudent[s.id!] = studentRecord;
       });
@@ -416,7 +419,9 @@ const AttendanceTracker = () => {
             : '';
 
           const therapiesStr = sessionsList ? `\n(${sessionsList})` : '';
-          student[record.date] = record.status + therapiesStr;
+          const matchedDay = daysInMonth.find(d => d.key === record.date);
+          const dayLabel = matchedDay ? matchedDay.label : record.date;
+          student[dayLabel] = record.status + therapiesStr;
           if (record.status === 'Present') student['Total Present']++;
           if (record.status === 'Absent') student['Total Absent']++;
           if (record.status === 'Late') student['Total Late']++;
@@ -424,7 +429,7 @@ const AttendanceTracker = () => {
       });
 
       // Prepare headers explicitly to maintain order
-      const header = ['Student Name', 'Total Present', 'Total Absent', 'Total Late', ...daysInMonth];
+      const header = ['Student Name', 'Total Present', 'Total Absent', 'Total Late', ...daysInMonth.map(d => d.label)];
 
       const ws = XLSX.utils.json_to_sheet(Object.values(dataByStudent), { header });
 

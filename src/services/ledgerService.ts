@@ -1,6 +1,18 @@
 import { ChartOfAccountItem, FinanceTransaction, Fee, LedgerEntry, AccountLedgerReport } from '../types';
 import ExcelJS from 'exceljs';
 import { saveAs } from 'file-saver';
+import { formatDate } from '../utils/dateUtils';
+import {
+  EXCEL_COLORS,
+  NUMBER_FORMATS,
+  BORDERS,
+  styleHeaderRow,
+  styleDataRow,
+  styleSectionHeaderRow,
+  styleTotalRow,
+  autoFitWorksheetColumns,
+  setupSheetViews
+} from '../utils/excelFormatters';
 
 // Helper to determine cash vs non-cash payment mode
 export const isCashMode = (mode?: string): boolean => {
@@ -38,6 +50,20 @@ const EXPENSE_CATEGORY_TO_CODE: Record<string, string> = {
   'Training': '5090',
   'Office & Printing Supplies': '5040',
   'Bank Charges': '5100',
+  'Taxi & General Conveyance': '5130',
+  'Conveyance': '5130',
+  'Documentation & Registration': '5140',
+  'Registration': '5140',
+  'Stationary Expenses': '5150',
+  'Stationery Expenses': '5150',
+  'Stationary': '5150',
+  'Stationery': '5150',
+  'Mobile & Internet Expenses': '5160',
+  'Mobile & Internet': '5160',
+  'Canteen Expenses': '5170',
+  'Canteen': '5170',
+  'Refreshment Expenses': '5180',
+  'Refreshments': '5180',
   'Other Operational Expense': '5040'
 };
 
@@ -54,6 +80,251 @@ const ASSET_CATEGORY_TO_CODE: Record<string, string> = {
   'Facility Improvements': '1550',
   'Vehicle & Transport': '1550',
   'Other Capital Assets': '1510'
+};
+
+/**
+ * Indian Financial Year Structure & Calculations
+ * Indian FY runs strictly from April 1 to March 31 of the subsequent year.
+ */
+export interface IndianFYInfo {
+  fyStartYear: number;
+  fyEndYear: number;
+  fyStartDate: string; // 'YYYY-04-01'
+  fyEndDate: string; // 'YYYY-03-31'
+  fyLabel: string; // 'FY 2026-2027'
+  quarterNumber: number; // 1, 2, 3, or 4
+  quarterLabel: string; // 'Q3 FY 2026-2027'
+  quarterStartDate: string;
+  quarterEndDate: string;
+  elapsedMonthsYTD: number; // 1 to 12
+}
+
+export const getIndianFYInfo = (dateInput: Date | string = new Date()): IndianFYInfo => {
+  const d = typeof dateInput === 'string' ? new Date(dateInput) : dateInput;
+  const validDate = isNaN(d.getTime()) ? new Date() : d;
+  const m = validDate.getMonth(); // 0 = Jan, 3 = Apr, 11 = Dec
+  const y = validDate.getFullYear();
+
+  const fyStartYear = m >= 3 ? y : y - 1;
+  const fyEndYear = fyStartYear + 1;
+  const fyStartDate = `${fyStartYear}-04-01`;
+  const fyEndDate = `${fyEndYear}-03-31`;
+  const fyLabel = `FY ${fyStartYear}-${fyEndYear}`;
+
+  let quarterNumber = 1;
+  let quarterStartDate = `${fyStartYear}-04-01`;
+  let quarterEndDate = `${fyStartYear}-06-30`;
+
+  if (m >= 3 && m <= 5) {
+    quarterNumber = 1;
+    quarterStartDate = `${fyStartYear}-04-01`;
+    quarterEndDate = `${fyStartYear}-06-30`;
+  } else if (m >= 6 && m <= 8) {
+    quarterNumber = 2;
+    quarterStartDate = `${fyStartYear}-07-01`;
+    quarterEndDate = `${fyStartYear}-09-30`;
+  } else if (m >= 9 && m <= 11) {
+    quarterNumber = 3;
+    quarterStartDate = `${fyStartYear}-10-01`;
+    quarterEndDate = `${fyStartYear}-12-31`;
+  } else {
+    quarterNumber = 4;
+    quarterStartDate = `${fyEndYear}-01-01`;
+    quarterEndDate = `${fyEndYear}-03-31`;
+  }
+
+  const quarterLabel = `Q${quarterNumber} ${fyLabel}`;
+
+  // In Indian FY (Apr-Mar):
+  // Apr (3): 1, May (4): 2, ..., Dec (11): 9, Jan (0): 10, Feb (1): 11, Mar (2): 12
+  const elapsedMonthsYTD = m >= 3 ? (m - 3 + 1) : (m + 9 + 1);
+
+  return {
+    fyStartYear,
+    fyEndYear,
+    fyStartDate,
+    fyEndDate,
+    fyLabel,
+    quarterNumber,
+    quarterLabel,
+    quarterStartDate,
+    quarterEndDate,
+    elapsedMonthsYTD
+  };
+};
+
+/**
+ * Calculates Accumulated Depreciation (Account 1600) and Current Indian FY Depreciation Expense (Account 5120)
+ * for a list of capital asset transactions.
+ */
+export const calculateAssetDepreciationBreakdown = (
+  assetTransactions: FinanceTransaction[],
+  asOfDate: Date | string = new Date()
+) => {
+  const asOf = typeof asOfDate === 'string' ? new Date(asOfDate) : asOfDate;
+  const validAsOf = isNaN(asOf.getTime()) ? new Date() : asOf;
+  const asOfIso = validAsOf.toISOString().split('T')[0];
+  const fyInfo = getIndianFYInfo(validAsOf);
+
+  let totalAccumulatedDepreciation = 0;
+  let currentFYDepreciationYTD = 0;
+
+  const perAsset = assetTransactions.map(t => {
+    const cost = safeNum(t.amount);
+    const usefulYears = safeNum(t.assetDetails?.usefulLifeYears) || 5;
+    const usefulMonths = usefulYears * 12;
+    const monthlyDep = usefulMonths > 0 ? cost / usefulMonths : 0;
+    const purchaseDate = t.date || asOfIso;
+
+    let assetAccumulatedDep = 0;
+    let assetFYDep = 0;
+    let totalMonthsActive = 0;
+    let fyMonthsActive = 0;
+
+    if (purchaseDate <= asOfIso) {
+      const pDate = new Date(purchaseDate);
+      // Total elapsed calendar months from purchase month up to the as-of reporting month
+      const elapsedAll = Math.max(1, (validAsOf.getFullYear() - pDate.getFullYear()) * 12 + (validAsOf.getMonth() - pDate.getMonth()) + 1);
+      totalMonthsActive = Math.min(usefulMonths, elapsedAll);
+      assetAccumulatedDep = Math.min(cost, Math.round(totalMonthsActive * monthlyDep));
+
+      // Calculate months active within the Indian Financial Year (cumulative from April 1 to as-of month)
+      const serviceStartThisFY = purchaseDate > fyInfo.fyStartDate ? purchaseDate : fyInfo.fyStartDate;
+      if (serviceStartThisFY <= asOfIso) {
+        const sDate = new Date(serviceStartThisFY);
+        const elapsedFY = Math.max(1, (validAsOf.getFullYear() - sDate.getFullYear()) * 12 + (validAsOf.getMonth() - sDate.getMonth()) + 1);
+
+        // Months elapsed before this FY began (prior to April 1)
+        const priorMonths = purchaseDate < fyInfo.fyStartDate
+          ? Math.max(0, (fyInfo.fyStartYear - pDate.getFullYear()) * 12 + (3 - pDate.getMonth()))
+          : 0;
+        const remainingMonths = Math.max(0, usefulMonths - priorMonths);
+        fyMonthsActive = Math.min(remainingMonths, elapsedFY);
+        const priorDep = Math.round(priorMonths * monthlyDep);
+        assetFYDep = Math.min(Math.max(0, cost - priorDep), Math.round(fyMonthsActive * monthlyDep));
+        if (assetFYDep < 0) assetFYDep = 0;
+      }
+    }
+
+    totalAccumulatedDepreciation += assetAccumulatedDep;
+    currentFYDepreciationYTD += assetFYDep;
+
+    return {
+      transaction: t,
+      cost,
+      usefulYears,
+      monthlyDep,
+      purchaseDate,
+      totalMonthsActive,
+      fyMonthsActive,
+      assetAccumulatedDep,
+      assetFYDep,
+      bookValue: Math.max(0, cost - assetAccumulatedDep)
+    };
+  });
+
+  return {
+    totalAccumulatedDepreciation,
+    currentFYDepreciationYTD,
+    fyInfo,
+    perAsset
+  };
+};
+
+/**
+ * Generates monthly periodic depreciation entries for Account 1600 (Accumulated Depreciation)
+ * or Account 5120 (Depreciation Expense) through the end of the Indian Financial Year (March 31).
+ */
+export const generateAssetDepreciationEntries = (
+  accountCode: '1600' | '5120',
+  accountName: string,
+  assetTransactions: FinanceTransaction[]
+): Omit<LedgerEntry, 'balance' | 'balanceType'>[] => {
+  const result: Omit<LedgerEntry, 'balance' | 'balanceType'>[] = [];
+  const now = new Date();
+  const fyInfo = getIndianFYInfo(now);
+  // Cumulative Financial Year runs through March 31 of fyEndYear
+  const endYear = fyInfo.fyEndYear;
+  const endMonth = 2; // March (0-indexed: 0=Jan, 1=Feb, 2=Mar)
+
+  assetTransactions.forEach(t => {
+    const cost = safeNum(t.amount);
+    if (cost <= 0) return;
+    const usefulYears = safeNum(t.assetDetails?.usefulLifeYears) || 5;
+    const usefulMonths = usefulYears * 12;
+    if (usefulMonths <= 0) return;
+    const monthlyDep = cost / usefulMonths;
+    const pDate = new Date(t.date || now.toISOString().split('T')[0]);
+    if (isNaN(pDate.getTime())) return;
+
+    const assetName = t.assetDetails?.assetName || t.description || 'Capital Asset';
+    const assetIdShort = t.id ? t.id.slice(-6).toUpperCase() : 'AST';
+
+    let curYear = pDate.getFullYear();
+    let curMonth = pDate.getMonth(); // 0-11
+    let monthCount = 0;
+    let cumDep = 0;
+
+    while ((curYear < endYear || (curYear === endYear && curMonth <= endMonth)) && monthCount < usefulMonths) {
+      monthCount++;
+      const lastDay = new Date(curYear, curMonth + 1, 0).getDate();
+      const entryDate = `${curYear}-${String(curMonth + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+
+      const monthDate = new Date(curYear, curMonth, 1);
+      const monthName = monthDate.toLocaleString('default', { month: 'short' });
+      const fy = getIndianFYInfo(monthDate);
+
+      let monthAmt = Math.round(monthlyDep);
+      if (monthCount === usefulMonths || cumDep + monthAmt > cost) {
+        monthAmt = Math.max(0, cost - cumDep);
+      }
+      cumDep += monthAmt;
+
+      if (monthAmt > 0) {
+        if (accountCode === '1600') {
+          result.push({
+            id: `deprec-1600-${t.id || 'ast'}-${curYear}-${curMonth}`,
+            date: entryDate,
+            voucherNumber: `DEP-${curYear}${String(curMonth + 1).padStart(2, '0')}-${assetIdShort}`,
+            accountCode: '1600',
+            accountName,
+            counterAccountCode: '5120',
+            counterAccountName: 'Capital Asset Depreciation Expense',
+            particulars: `Monthly Amortization: ${assetName} (${usefulYears} yr life) - ${monthName} ${curYear} [${fy.fyLabel}]`,
+            paymentMode: 'Non-Cash Amortization',
+            debit: 0,
+            credit: monthAmt,
+            transactionType: 'Depreciation Provision',
+            rawItem: t
+          });
+        } else {
+          result.push({
+            id: `deprec-5120-${t.id || 'ast'}-${curYear}-${curMonth}`,
+            date: entryDate,
+            voucherNumber: `DEP-EXP-${curYear}${String(curMonth + 1).padStart(2, '0')}-${assetIdShort}`,
+            accountCode: '5120',
+            accountName,
+            counterAccountCode: '1600',
+            counterAccountName: 'Accumulated Depreciation (All Fixed Assets)',
+            particulars: `Depreciation Charge: ${assetName} (${usefulYears} yr life) - ${monthName} ${curYear} [${fy.fyLabel}]`,
+            paymentMode: 'Non-Cash Charge',
+            debit: monthAmt,
+            credit: 0,
+            transactionType: 'Depreciation Charge',
+            rawItem: t
+          });
+        }
+      }
+
+      curMonth++;
+      if (curMonth > 11) {
+        curMonth = 0;
+        curYear++;
+      }
+    }
+  });
+
+  return result;
 };
 
 /**
@@ -698,26 +969,8 @@ export const getRawEntriesForAccount = (
   // 6. ACCUMULATED DEPRECIATION (1600 - Contra Asset)
   // ----------------------------------------------------
   else if (code === '1600') {
-    transactions.filter(isAssetTx).forEach(t => {
-      const cost = safeNum(t.amount);
-      const usefulYears = safeNum(t.assetDetails?.usefulLifeYears) || 5;
-      const annualDepreciation = cost / usefulYears;
-      entries.push({
-        id: `deprec-${t.id || Math.random()}`,
-        date: t.date,
-        voucherNumber: `DEP-EST-${t.id ? t.id.slice(-6).toUpperCase() : 'SCH'}`,
-        accountCode: '1600',
-        accountName: account.name,
-        counterAccountCode: '5120',
-        counterAccountName: 'Capital Asset Depreciation Expense',
-        particulars: `Accumulated Depreciation Amortization on ${t.assetDetails?.assetName || t.description || 'Capital Asset'} (${usefulYears} yr life)`,
-        paymentMode: 'Non-Cash Amortization',
-        debit: 0,
-        credit: Math.round(annualDepreciation),
-        transactionType: 'Depreciation Provision',
-        rawItem: t
-      });
-    });
+    const assetTxList = transactions.filter(isAssetTx);
+    entries.push(...generateAssetDepreciationEntries('1600', account.name, assetTxList));
   }
 
   // ----------------------------------------------------
@@ -846,26 +1099,8 @@ export const getRawEntriesForAccount = (
   // 11. DEPRECIATION EXPENSE (5120)
   // ----------------------------------------------------
   else if (code === '5120') {
-    transactions.filter(isAssetTx).forEach(t => {
-      const cost = safeNum(t.amount);
-      const usefulYears = safeNum(t.assetDetails?.usefulLifeYears) || 5;
-      const annualDepreciation = cost / usefulYears;
-      entries.push({
-        id: `exp-deprec-${t.id || Math.random()}`,
-        date: t.date,
-        voucherNumber: `DEP-EXP-${t.id ? t.id.slice(-6).toUpperCase() : 'SCH'}`,
-        accountCode: '5120',
-        accountName: account.name,
-        counterAccountCode: '1600',
-        counterAccountName: 'Accumulated Depreciation',
-        particulars: `Depreciation Charge on ${t.assetDetails?.assetName || t.description || 'Capital Asset'} (${usefulYears} yr schedule)`,
-        paymentMode: 'Non-Cash',
-        debit: Math.round(annualDepreciation),
-        credit: 0,
-        transactionType: 'Depreciation Charge',
-        rawItem: t
-      });
-    });
+    const assetTxList = transactions.filter(isAssetTx);
+    entries.push(...generateAssetDepreciationEntries('5120', account.name, assetTxList));
   }
 
   // ----------------------------------------------------
@@ -1011,6 +1246,16 @@ export const generateAccountLedgerReport = (
 
   allRaw.forEach(entry => {
     if (entry.date < startDate) {
+      // In double-entry accounting under Indian GAAP, nominal accounts (Expense 5xxx, Revenue 4xxx)
+      // reset to zero at the start of each Indian Financial Year (April 1).
+      // Only entries in the SAME financial year prior to startDate form the opening balance.
+      if (account.type === 'Expense' || account.type === 'Revenue' || account.code.startsWith('4') || account.code.startsWith('5')) {
+        const entryFY = getIndianFYInfo(entry.date).fyStartYear;
+        const startFY = getIndianFYInfo(startDate).fyStartYear;
+        if (entryFY !== startFY) {
+          return;
+        }
+      }
       priorDebits += entry.debit;
       priorCredits += entry.credit;
     }
@@ -1158,12 +1403,14 @@ export const generateMasterLedgerSummary = (
  */
 export const exportSingleLedgerToExcel = async (report: AccountLedgerReport) => {
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = 'Little Buds Child Care';
+  workbook.creator = 'Little Buds Child Care Centre';
   workbook.created = new Date();
 
-  const sheet = workbook.addWorksheet(`Ledger_${report.account.code}`);
+  const safeSheetName = `Ledger_${report.account.code}`.substring(0, 31);
+  const sheet = workbook.addWorksheet(safeSheetName, {
+    properties: { tabColor: { argb: 'FF312E81' } }
+  });
 
-  // Page setup
   sheet.pageSetup = {
     orientation: 'landscape',
     fitToPage: true,
@@ -1171,30 +1418,39 @@ export const exportSingleLedgerToExcel = async (report: AccountLedgerReport) => 
     fitToHeight: 0
   };
 
-  // Header Title
+  // Header Title Banner
   sheet.mergeCells('A1:H1');
   const titleCell = sheet.getCell('A1');
-  titleCell.value = 'LITTLE BUDS CHILD CARE & LEARNING CENTRE';
+  titleCell.value = 'Little Buds Child Care Centre';
   titleCell.font = { name: 'Calibri', size: 16, bold: true, color: { argb: 'FFFFFFFF' } };
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
-  titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF312E81' } }; // Indigo-900
+  titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } };
+  sheet.getRow(1).height = 28;
 
   sheet.mergeCells('A2:H2');
   const subCell = sheet.getCell('A2');
   subCell.value = `GENERAL LEDGER STATEMENT — ACCOUNT: ${report.account.code} : ${report.account.name.toUpperCase()}`;
   subCell.font = { name: 'Calibri', size: 12, bold: true, color: { argb: 'FFFFFFFF' } };
   subCell.alignment = { horizontal: 'center', vertical: 'middle' };
-  subCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4338CA' } }; // Indigo-700
+  subCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF312E81' } };
+  sheet.getRow(2).height = 22;
 
   // Metadata block
-  sheet.addRow(['Statement Period:', report.periodLabel, '', '', 'Account Type:', `${report.account.type} (${report.account.subtype})`, '', '']);
-  sheet.addRow(['Date Range:', `${report.startDate} to ${report.endDate}`, '', '', 'Normal Balance:', report.account.normalBalance, '', '']);
-  sheet.addRow(['Exported On:', new Date().toLocaleString('en-IN'), '', '', 'Currency:', 'INR (₹)', '', '']);
+  const meta1 = sheet.addRow(['Statement Period:', report.periodLabel, '', '', 'Account Type:', `${report.account.type} (${report.account.subtype})`, '', '']);
+  const meta2 = sheet.addRow(['Date Range:', `${formatDate(report.startDate)} to ${formatDate(report.endDate)}`, '', '', 'Normal Balance:', report.account.normalBalance, '', '']);
+  const meta3 = sheet.addRow(['Exported On:', `${formatDate(new Date())} ${new Date().toLocaleTimeString('en-IN')}`, '', '', 'Currency:', 'INR (₹)', '', '']);
+  [meta1, meta2, meta3].forEach(row => {
+    row.getCell(1).font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF475569' } };
+    row.getCell(2).font = { name: 'Calibri', size: 10, color: { argb: 'FF0F172A' } };
+    row.getCell(5).font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF475569' } };
+    row.getCell(6).font = { name: 'Calibri', size: 10, color: { argb: 'FF0F172A' } };
+    row.height = 18;
+  });
   sheet.addRow([]); // Blank spacer
 
   // Table Columns
   const headerRow = sheet.addRow([
-    'Date',
+    'Date (DD/MM/YYYY)',
     'Voucher / Ref #',
     'Particulars / Narration',
     'Opposite Account (Counterparty)',
@@ -1203,55 +1459,66 @@ export const exportSingleLedgerToExcel = async (report: AccountLedgerReport) => 
     'Credit (Cr) ₹',
     'Running Balance ₹'
   ]);
-
-  headerRow.eachCell(cell => {
-    cell.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } }; // Slate-800
-    cell.alignment = { horizontal: 'center', vertical: 'middle' };
-  });
+  styleHeaderRow(headerRow, 8, EXCEL_COLORS.navyHeader);
+  headerRow.height = 24;
 
   // Opening Balance Row
   const opRow = sheet.addRow([
-    report.startDate,
+    formatDate(report.startDate),
     '—',
-    `Opening Balance B/F (as of ${report.startDate})`,
+    `Opening Balance B/F (as of ${formatDate(report.startDate)})`,
     '—',
     '—',
     report.openingBalanceType === 'Dr' ? report.openingBalance : 0,
     report.openingBalanceType === 'Cr' ? report.openingBalance : 0,
-    `${report.openingBalance.toLocaleString('en-IN')} ${report.openingBalanceType}`
+    `${report.openingBalance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${report.openingBalanceType}`
   ]);
   opRow.eachCell((cell, colNumber) => {
     cell.font = { name: 'Calibri', size: 10, italic: true, bold: true, color: { argb: 'FF334155' } };
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } }; // Slate-100
-    if (colNumber >= 6 && colNumber <= 7) {
-      cell.numFmt = '#,##0.00';
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+    cell.border = BORDERS.thin;
+    if (colNumber === 6 || colNumber === 7) {
+      cell.numFmt = NUMBER_FORMATS.currency;
+      cell.alignment = { horizontal: 'right', vertical: 'middle' };
+    } else if (colNumber === 8) {
+      cell.alignment = { horizontal: 'right', vertical: 'middle' };
+    } else if (colNumber === 1 || colNumber === 2 || colNumber === 5) {
+      cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    } else {
+      cell.alignment = { horizontal: 'left', vertical: 'middle' };
     }
   });
 
   // Transaction Rows
-  report.entries.forEach(entry => {
+  report.entries.forEach((entry, idx) => {
     const row = sheet.addRow([
-      entry.date,
+      formatDate(entry.date),
       entry.voucherNumber || '—',
       entry.particulars,
       `${entry.counterAccountCode ? `${entry.counterAccountCode} - ` : ''}${entry.counterAccountName || 'General'}`,
       entry.paymentMode || '—',
       entry.debit > 0 ? entry.debit : 0,
       entry.credit > 0 ? entry.credit : 0,
-      `${entry.balance.toLocaleString('en-IN')} ${entry.balanceType}`
+      `${entry.balance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${entry.balanceType}`
     ]);
 
-    row.getCell(6).numFmt = '#,##0.00';
-    row.getCell(7).numFmt = '#,##0.00';
-    row.getCell(1).alignment = { horizontal: 'center' };
-    row.getCell(2).alignment = { horizontal: 'center' };
+    const isEven = idx % 2 === 0;
+    styleDataRow(row, 8, isEven);
+    row.getCell(6).numFmt = NUMBER_FORMATS.currency;
+    row.getCell(7).numFmt = NUMBER_FORMATS.currency;
+    row.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
+    row.getCell(2).alignment = { horizontal: 'center', vertical: 'middle' };
+    row.getCell(5).alignment = { horizontal: 'center', vertical: 'middle' };
+    row.getCell(6).alignment = { horizontal: 'right', vertical: 'middle' };
+    row.getCell(7).alignment = { horizontal: 'right', vertical: 'middle' };
+    row.getCell(8).alignment = { horizontal: 'right', vertical: 'middle' };
   });
 
   if (report.entries.length === 0) {
-    const emptyRow = sheet.addRow(['—', '—', 'No transactions recorded during this period.', '—', '—', 0, 0, `${report.openingBalance.toLocaleString('en-IN')} ${report.openingBalanceType}`]);
+    const emptyRow = sheet.addRow(['—', '—', 'No transactions recorded during this period.', '—', '—', 0, 0, `${report.openingBalance.toLocaleString('en-IN', { minimumFractionDigits: 2 })} ${report.openingBalanceType}`]);
     emptyRow.eachCell(c => {
       c.font = { italic: true, color: { argb: 'FF64748B' } };
+      c.border = BORDERS.thin;
     });
   }
 
@@ -1264,48 +1531,42 @@ export const exportSingleLedgerToExcel = async (report: AccountLedgerReport) => 
     '',
     report.totalDebit,
     report.totalCredit,
-    `Net: ${Math.abs(report.netMovement).toLocaleString('en-IN')} ${report.closingBalanceType}`
+    `Net: ${Math.abs(report.netMovement).toLocaleString('en-IN', { minimumFractionDigits: 2 })} ${report.closingBalanceType}`
   ]);
-  totalRow.eachCell((cell, colNumber) => {
-    cell.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FF0F172A' } };
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E8F0' } }; // Slate-200
-    cell.border = {
-      top: { style: 'thin' },
-      bottom: { style: 'double' }
-    };
-    if (colNumber >= 6 && colNumber <= 7) {
-      cell.numFmt = '#,##0.00';
-    }
-  });
+  styleTotalRow(totalRow, 8);
+  totalRow.getCell(6).numFmt = NUMBER_FORMATS.currency;
+  totalRow.getCell(7).numFmt = NUMBER_FORMATS.currency;
+  totalRow.getCell(6).alignment = { horizontal: 'right', vertical: 'middle' };
+  totalRow.getCell(7).alignment = { horizontal: 'right', vertical: 'middle' };
+  totalRow.getCell(8).alignment = { horizontal: 'right', vertical: 'middle' };
 
   // Closing Balance Row
   const closeRow = sheet.addRow([
-    report.endDate,
+    formatDate(report.endDate),
     '—',
-    `CLOSING BALANCE C/F (as of ${report.endDate})`,
+    `CLOSING BALANCE C/F (as of ${formatDate(report.endDate)})`,
     '—',
     '—',
     report.closingBalanceType === 'Dr' ? report.closingBalance : 0,
     report.closingBalanceType === 'Cr' ? report.closingBalance : 0,
-    `${report.closingBalance.toLocaleString('en-IN')} ${report.closingBalanceType}`
+    `${report.closingBalance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${report.closingBalanceType}`
   ]);
   closeRow.eachCell((cell, colNumber) => {
     cell.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FF1E1B4B' } };
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E7FF' } }; // Indigo-100
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E7FF' } };
+    cell.border = BORDERS.total;
     if (colNumber >= 6 && colNumber <= 7) {
-      cell.numFmt = '#,##0.00';
+      cell.numFmt = NUMBER_FORMATS.currency;
+      cell.alignment = { horizontal: 'right', vertical: 'middle' };
+    } else if (colNumber === 8) {
+      cell.alignment = { horizontal: 'right', vertical: 'middle' };
+    } else if (colNumber === 1 || colNumber === 2 || colNumber === 5) {
+      cell.alignment = { horizontal: 'center', vertical: 'middle' };
     }
   });
 
-  // Adjust column widths
-  sheet.getColumn(1).width = 14; // Date
-  sheet.getColumn(2).width = 18; // Voucher #
-  sheet.getColumn(3).width = 38; // Particulars
-  sheet.getColumn(4).width = 32; // Counter Account
-  sheet.getColumn(5).width = 18; // Mode
-  sheet.getColumn(6).width = 18; // Debit
-  sheet.getColumn(7).width = 18; // Credit
-  sheet.getColumn(8).width = 22; // Balance
+  setupSheetViews(sheet, 6);
+  autoFitWorksheetColumns(sheet);
 
   const buffer = await workbook.xlsx.writeBuffer();
   const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
@@ -1322,26 +1583,44 @@ export const exportMasterLedgerToExcel = async (
   endDate: string
 ) => {
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = 'Little Buds Child Care';
+  workbook.creator = 'Little Buds Child Care Centre';
   workbook.created = new Date();
 
-  const sheet = workbook.addWorksheet('Master_Ledger_Summary');
+  const sheet = workbook.addWorksheet('Master_Ledger_Summary', {
+    properties: { tabColor: { argb: 'FF1E293B' } }
+  });
+
+  sheet.pageSetup = {
+    orientation: 'landscape',
+    fitToPage: true,
+    fitToWidth: 1,
+    fitToHeight: 0
+  };
 
   sheet.mergeCells('A1:G1');
   const titleCell = sheet.getCell('A1');
-  titleCell.value = 'LITTLE BUDS CHILD CARE & LEARNING CENTRE';
+  titleCell.value = 'Little Buds Child Care Centre';
   titleCell.font = { name: 'Calibri', size: 16, bold: true, color: { argb: 'FFFFFFFF' } };
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
-  titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF312E81' } };
+  titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } };
+  sheet.getRow(1).height = 28;
 
   sheet.mergeCells('A2:G2');
   const subCell = sheet.getCell('A2');
   subCell.value = `MASTER GENERAL LEDGER SUMMARY REPORT — ${periodLabel.toUpperCase()}`;
   subCell.font = { name: 'Calibri', size: 12, bold: true, color: { argb: 'FFFFFFFF' } };
   subCell.alignment = { horizontal: 'center', vertical: 'middle' };
-  subCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4338CA' } };
+  subCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF312E81' } };
+  sheet.getRow(2).height = 22;
 
-  sheet.addRow(['Period:', periodLabel, 'Date Range:', `${startDate} to ${endDate}`, 'Exported:', new Date().toLocaleString('en-IN'), 'Currency: INR (₹)']);
+  const metaRow = sheet.addRow([
+    'Period:', periodLabel,
+    'Date Range:', `${formatDate(startDate)} to ${formatDate(endDate)}`,
+    'Exported:', `${formatDate(new Date())} ${new Date().toLocaleTimeString('en-IN')}`,
+    'Currency: INR (₹)'
+  ]);
+  metaRow.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF475569' } };
+  metaRow.height = 18;
   sheet.addRow([]);
 
   const headerRow = sheet.addRow([
@@ -1353,39 +1632,42 @@ export const exportMasterLedgerToExcel = async (
     'Period Credits (Cr) ₹',
     'Closing Balance (₹)'
   ]);
-
-  headerRow.eachCell(cell => {
-    cell.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } };
-    cell.alignment = { horizontal: 'center', vertical: 'middle' };
-  });
+  styleHeaderRow(headerRow, 7, EXCEL_COLORS.navyHeader);
+  headerRow.height = 24;
 
   // Group accounts by Type
   const types = ['Asset', 'Liability', 'Equity', 'Revenue', 'Expense'] as const;
 
+  let rowCounter = 0;
   types.forEach(type => {
     const typeItems = summary.items.filter(i => i.account.type === type);
     if (typeItems.length === 0) return;
 
     // Group header row
     const groupRow = sheet.addRow([`CLASSIFICATION: ${type.toUpperCase()}S`, '', '', '', '', '', '']);
-    groupRow.eachCell(c => {
-      c.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FF1E1B4B' } };
-      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E7FF' } };
-    });
+    styleSectionHeaderRow(groupRow, 7, `CLASSIFICATION: ${type.toUpperCase()}S`, EXCEL_COLORS.indigoSubtle, 'FF1E1B4B');
+    groupRow.height = 20;
 
     typeItems.forEach(item => {
+      rowCounter++;
       const row = sheet.addRow([
         item.account.code,
         item.account.name,
         `${item.account.type} • ${item.account.subtype}`,
-        `${item.openingBalance.toLocaleString('en-IN')} ${item.openingBalanceType}`,
+        `${item.openingBalance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${item.openingBalanceType}`,
         item.periodDebit,
         item.periodCredit,
-        `${item.closingBalance.toLocaleString('en-IN')} ${item.closingBalanceType}`
+        `${item.closingBalance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${item.closingBalanceType}`
       ]);
-      row.getCell(5).numFmt = '#,##0.00';
-      row.getCell(6).numFmt = '#,##0.00';
+      const isEven = rowCounter % 2 === 0;
+      styleDataRow(row, 7, isEven);
+      row.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
+      row.getCell(4).alignment = { horizontal: 'right', vertical: 'middle' };
+      row.getCell(5).numFmt = NUMBER_FORMATS.currency;
+      row.getCell(5).alignment = { horizontal: 'right', vertical: 'middle' };
+      row.getCell(6).numFmt = NUMBER_FORMATS.currency;
+      row.getCell(6).alignment = { horizontal: 'right', vertical: 'middle' };
+      row.getCell(7).alignment = { horizontal: 'right', vertical: 'middle' };
     });
   });
 
@@ -1394,28 +1676,22 @@ export const exportMasterLedgerToExcel = async (
     'GRAND TOTALS',
     `Active Accounts: ${summary.items.length}`,
     'Double-Entry Verification',
-    `Dr: ${summary.totals.totalOpeningDr.toLocaleString('en-IN')} | Cr: ${summary.totals.totalOpeningCr.toLocaleString('en-IN')}`,
+    `Dr: ${summary.totals.totalOpeningDr.toLocaleString('en-IN', { minimumFractionDigits: 2 })} | Cr: ${summary.totals.totalOpeningCr.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`,
     summary.totals.totalPeriodDr,
     summary.totals.totalPeriodCr,
-    `Dr: ${summary.totals.totalClosingDr.toLocaleString('en-IN')} | Cr: ${summary.totals.totalClosingCr.toLocaleString('en-IN')}`
+    `Dr: ${summary.totals.totalClosingDr.toLocaleString('en-IN', { minimumFractionDigits: 2 })} | Cr: ${summary.totals.totalClosingCr.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`
   ]);
+  styleTotalRow(totalRow, 7);
+  totalRow.height = 22;
+  totalRow.getCell(5).numFmt = NUMBER_FORMATS.currency;
+  totalRow.getCell(6).numFmt = NUMBER_FORMATS.currency;
+  totalRow.getCell(5).alignment = { horizontal: 'right', vertical: 'middle' };
+  totalRow.getCell(6).alignment = { horizontal: 'right', vertical: 'middle' };
+  totalRow.getCell(4).alignment = { horizontal: 'center', vertical: 'middle' };
+  totalRow.getCell(7).alignment = { horizontal: 'center', vertical: 'middle' };
 
-  totalRow.eachCell((cell, colNumber) => {
-    cell.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FF0F172A' } };
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E8F0' } };
-    cell.border = { top: { style: 'thin' }, bottom: { style: 'double' } };
-    if (colNumber === 5 || colNumber === 6) {
-      cell.numFmt = '#,##0.00';
-    }
-  });
-
-  sheet.getColumn(1).width = 16;
-  sheet.getColumn(2).width = 42;
-  sheet.getColumn(3).width = 30;
-  sheet.getColumn(4).width = 22;
-  sheet.getColumn(5).width = 22;
-  sheet.getColumn(6).width = 22;
-  sheet.getColumn(7).width = 24;
+  setupSheetViews(sheet, 5);
+  autoFitWorksheetColumns(sheet);
 
   const buffer = await workbook.xlsx.writeBuffer();
   const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
