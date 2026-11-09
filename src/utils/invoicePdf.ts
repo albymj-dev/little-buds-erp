@@ -118,7 +118,8 @@ export function getInvoiceLineItems(fee: Fee): InvoiceItem[] {
     qty = fee.units || 1;
     rate = fee.rate || (amount / (qty || 1));
   } else if (fee.billingBasis === 'per_session') {
-    desc = fee.customTypeName ? `${fee.customTypeName} (Session Fee)` : 'Learning & Activity Session';
+    const sessionName = fee.type || fee.customTypeName || 'Special Education';
+    desc = sessionName.toLowerCase().includes('session') ? sessionName : `${sessionName} (Session Fee)`;
     qty = fee.units || 1;
     rate = fee.rate || (amount / (qty || 1));
   } else if (fee.billingBasis === 'custom') {

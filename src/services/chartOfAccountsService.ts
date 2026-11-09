@@ -693,11 +693,23 @@ export const calculateAccountLedgerBalances = (
   fees.forEach(f => {
     const paid = f.amountPaid || 0;
     if (paid > 0) {
-      if (f.type === 'Therapy Session' && result['4020']) {
+      const typeLower = (f.type || '').toLowerCase();
+      const customLower = (f.customTypeName || '').toLowerCase();
+      const isSession = f.billingBasis === 'per_session' ||
+        typeLower.includes('session') ||
+        typeLower.includes('special education') ||
+        typeLower.includes('speech') ||
+        typeLower.includes('assessment') ||
+        typeLower.includes('therapy') ||
+        customLower.includes('session') ||
+        customLower.includes('therapy');
+      const isReg = typeLower.includes('registration') || typeLower.includes('admission');
+
+      if (isSession && result['4020']) {
         result['4020'].balance += paid;
         result['4020'].creditTotal += paid;
         result['4020'].entryCount += 1;
-      } else if (f.type === 'Registration' && result['4030']) {
+      } else if (isReg && result['4030']) {
         result['4030'].balance += paid;
         result['4030'].creditTotal += paid;
         result['4030'].entryCount += 1;

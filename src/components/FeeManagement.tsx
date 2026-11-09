@@ -5,7 +5,7 @@ import {
   Receipt, AlertCircle, CheckCircle, Clock, Download, Printer, Trash2, 
   Settings, Eye, Landmark, Banknote, X, Check, Timer, Sparkles, 
   StickyNote, Search, Filter, MapPin, Calendar, HelpCircle, Layers,
-  ChevronDown, ArrowRight, Pencil, MessageSquare
+  ChevronDown, ArrowRight, Pencil, MessageSquare, Plus
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { formatDate } from '../utils/dateUtils';
@@ -56,9 +56,93 @@ const FeeManagement = () => {
   const [hourlyHours, setHourlyHours] = useState<number>(10);
 
   // Per session base options
-  const [sessionService, setSessionService] = useState<string>('Early Learning & Activity Session');
-  const [sessionRate, setSessionRate] = useState<number>(450);
+  const DEFAULT_SESSION_OPTIONS = [
+    'Special Education',
+    'Speech Therapy',
+    'Speech Assessment'
+  ];
+
+  const [customSessionOptions, setCustomSessionOptions] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('little_buds_custom_fee_sessions');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+      const attSaved = localStorage.getItem('custom_activity_sessions');
+      if (attSaved) {
+        const parsed = JSON.parse(attSaved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.filter(s => !['Special Education', 'Speech Therapy', 'Speech Assessment'].includes(s));
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load custom fee sessions', e);
+    }
+    return [];
+  });
+  const [sessionService, setSessionService] = useState<string>('Special Education');
+  const [sessionRate, setSessionRate] = useState<number>(500);
   const [sessionCount, setSessionCount] = useState<number>(8);
+  const [isAddingCustomSession, setIsAddingCustomSession] = useState(false);
+  const [customSessionInput, setCustomSessionInput] = useState('');
+
+  // Persist custom session options to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('little_buds_custom_fee_sessions', JSON.stringify(customSessionOptions));
+    } catch (e) {
+      console.error('Failed to save custom fee sessions', e);
+    }
+  }, [customSessionOptions]);
+
+  const handleSessionChange = (value: string) => {
+    if (value === '__ADD_CUSTOM__') {
+      setIsAddingCustomSession(true);
+      setCustomSessionInput('');
+      return;
+    }
+    setIsAddingCustomSession(false);
+    setSessionService(value);
+    // Suggest standard benchmark session rates
+    if (value === 'Special Education') {
+      setSessionRate(500);
+    } else if (value === 'Speech Therapy') {
+      setSessionRate(600);
+    } else if (value === 'Speech Assessment') {
+      setSessionRate(1200);
+    }
+    setManualAmountOverride(null);
+  };
+
+  const handleSaveCustomSession = () => {
+    const trimmed = customSessionInput.trim();
+    if (!trimmed) {
+      addToast('error', 'Please enter a valid session name.');
+      return;
+    }
+    if (
+      !DEFAULT_SESSION_OPTIONS.includes(trimmed) &&
+      !customSessionOptions.some(s => s.toLowerCase() === trimmed.toLowerCase())
+    ) {
+      setCustomSessionOptions(prev => [...prev, trimmed]);
+    }
+    setSessionService(trimmed);
+    setIsAddingCustomSession(false);
+    setCustomSessionInput('');
+    setManualAmountOverride(null);
+    addToast('success', `Session "${trimmed}" added and selected.`);
+  };
+
+  const handleRemoveCustomSession = (nameToRemove: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setCustomSessionOptions(prev => prev.filter(s => s !== nameToRemove));
+    if (sessionService === nameToRemove) {
+      setSessionService('Special Education');
+      setSessionRate(500);
+    }
+    addToast('info', `Removed custom session "${nameToRemove}".`);
+  };
 
   // Custom fee options
   const [customFeeName, setCustomFeeName] = useState<string>('');
@@ -180,7 +264,8 @@ const FeeManagement = () => {
       rate = Number(hourlyRate) || 0;
       units = Number(hourlyHours) || 0;
     } else if (billingBasis === 'per_session') {
-      finalType = sessionService.trim() || 'Care / Activity Session';
+      finalType = sessionService.trim() || 'Special Education';
+      customTypeName = sessionService.trim() || 'Special Education';
       rate = Number(sessionRate) || 0;
       units = Number(sessionCount) || 0;
     } else if (billingBasis === 'custom') {
@@ -727,16 +812,115 @@ const FeeManagement = () => {
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   <div>
-                    <label className="block text-xs font-bold text-stone-700 uppercase tracking-wider mb-1">
-                      Session Name / Activity
-                    </label>
-                    <input
-                      type="text"
-                      value={sessionService}
-                      onChange={e => setSessionService(e.target.value)}
-                      placeholder="e.g. Early Learning & Play Session"
-                      className="w-full rounded-xl border border-stone-300 py-2 px-3 text-sm focus:border-indigo-500 focus:ring-indigo-500"
-                    />
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-xs font-bold text-stone-700 uppercase tracking-wider">
+                        Type of Session *
+                      </label>
+                      {!isAddingCustomSession && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsAddingCustomSession(true);
+                            setCustomSessionInput('');
+                          }}
+                          className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1"
+                        >
+                          <Plus className="w-3 h-3" />
+                          Add Custom
+                        </button>
+                      )}
+                    </div>
+
+                    <select
+                      value={isAddingCustomSession ? '__ADD_CUSTOM__' : sessionService}
+                      onChange={e => handleSessionChange(e.target.value)}
+                      className="w-full rounded-xl border border-stone-300 py-2 px-3 text-sm font-semibold text-stone-900 bg-white focus:border-indigo-500 focus:ring-indigo-500 shadow-2xs"
+                    >
+                      <optgroup label="Standard Development & Therapy Sessions">
+                        <option value="Special Education">Special Education</option>
+                        <option value="Speech Therapy">Speech Therapy</option>
+                        <option value="Speech Assessment">Speech Assessment</option>
+                      </optgroup>
+                      {customSessionOptions.length > 0 && (
+                        <optgroup label="Custom Configured Sessions">
+                          {customSessionOptions.map(name => (
+                            <option key={name} value={name}>{name}</option>
+                          ))}
+                        </optgroup>
+                      )}
+                      <option value="__ADD_CUSTOM__" className="text-indigo-600 font-bold">
+                        + Add Custom Session Name...
+                      </option>
+                    </select>
+
+                    {/* Inline custom session input */}
+                    {isAddingCustomSession && (
+                      <div className="mt-2.5 p-2.5 bg-indigo-50/90 rounded-xl border border-indigo-200 space-y-2">
+                        <div className="text-[11px] font-bold text-indigo-900">Enter Custom Session Name:</div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            value={customSessionInput}
+                            onChange={e => setCustomSessionInput(e.target.value)}
+                            placeholder="e.g. Occupational Therapy, Sensory Play..."
+                            className="flex-1 rounded-lg border border-indigo-300 px-3 py-1.5 text-xs text-stone-900 bg-white focus:ring-indigo-500 focus:border-indigo-500"
+                            autoFocus
+                            onKeyDown={e => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                handleSaveCustomSession();
+                              }
+                            }}
+                          />
+                          <button
+                            type="button"
+                            onClick={handleSaveCustomSession}
+                            className="px-3 py-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-colors shrink-0"
+                          >
+                            Save
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setIsAddingCustomSession(false);
+                              if (!sessionService) setSessionService('Special Education');
+                            }}
+                            className="px-2 py-1.5 text-xs text-stone-500 hover:text-stone-700 font-medium shrink-0"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Custom session chips if any */}
+                    {customSessionOptions.length > 0 && !isAddingCustomSession && (
+                      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                        <span className="text-[10px] text-stone-400 font-medium">Custom:</span>
+                        {customSessionOptions.map(name => (
+                          <span
+                            key={name}
+                            onClick={() => handleSessionChange(name)}
+                            className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-md cursor-pointer transition-colors border ${
+                              sessionService === name
+                                ? 'bg-indigo-100 text-indigo-900 border-indigo-300 font-bold'
+                                : 'bg-stone-50 text-stone-600 border-stone-200 hover:bg-indigo-50'
+                            }`}
+                            title="Click to select this session"
+                          >
+                            <span>{name}</span>
+                            <button
+                              type="button"
+                              onClick={e => handleRemoveCustomSession(name, e)}
+                              className="text-stone-400 hover:text-rose-600 ml-0.5"
+                              title={`Delete "${name}"`}
+                            >
+                              <X className="w-2.5 h-2.5" />
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
                   <div>

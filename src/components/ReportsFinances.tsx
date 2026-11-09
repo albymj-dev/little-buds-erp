@@ -16,7 +16,7 @@ import {
   Package, Search, Building, Eye, X, Tag, CheckCircle2, SlidersHorizontal, Layers,
   Scale, FileText, Printer, ArrowUpRight, ArrowDownRight, Sparkles, Percent, Calendar,
   PieChart as PieChartIcon, Landmark, Banknote, Users, HandCoins, Wallet, Pencil, ArrowUpDown,
-  Filter, Check, BookOpen, Palette, ShieldCheck, ArrowRightLeft, Clock
+  Filter, Check, BookOpen, Palette, ShieldCheck, ArrowRightLeft, Clock, Timer
 } from 'lucide-react';
 import { getStaffSalaries, getAccruedExpenses, getCustomCategories } from '../services/accountingService';
 import { StaffSalary, AccruedExpense, CustomCategory } from '../types';
@@ -1004,10 +1004,19 @@ const ReportsFinances = () => {
     attendance.filter(a => a.date.startsWith(currentMonthPrefix) && (a.therapyType || (a.therapyTypes && a.therapyTypes.length > 0))).forEach(a => {
       const therapies = a.therapyTypes || (a.therapyType ? [a.therapyType] : []);
       therapies.forEach(t => {
-        const key = (t === 'Behavioral' || t === 'Social Learning') ? 'Special Education' : t === 'Speech' ? 'Speech & Language' : t === 'OT' ? 'Motor & Sensory Play' : t;
+        const key = (t === 'Behavioral' || t === 'Social Learning') ? 'Special Education' : t === 'Speech' ? 'Speech Therapy' : t === 'OT' ? 'Motor & Sensory Play' : t;
         breakdown[key] = (breakdown[key] || 0) + 1;
       });
     });
+
+    // Also include recorded sessions from billed fees for the current month
+    fees
+      .filter(f => (f.billingBasis === 'per_session' || f.type?.toLowerCase().includes('session') || f.type?.toLowerCase().includes('speech') || f.type?.toLowerCase().includes('special education') || f.type?.toLowerCase().includes('assessment')) && f.dueDate && f.dueDate.startsWith(currentMonthPrefix))
+      .forEach(f => {
+        const key = f.customTypeName || f.type || 'Special Education';
+        const units = safeNum(f.units) || 1;
+        breakdown[key] = (breakdown[key] || 0) + units;
+      });
     
     return Object.entries(breakdown).map(([name, value]) => ({ name, value }));
   };
@@ -1044,7 +1053,7 @@ const ReportsFinances = () => {
     let totalCashDepositedToBank = 0;
     let totalCashWithdrawnFromBank = 0;
 
-    const receiptsByCategory: Record<string, number> = { 'Tuition Fees': 0 };
+    const receiptsByCategory: Record<string, number> = {};
     const bankReceiptsByCategory: Record<string, number> = {};
     const cashReceiptsByCategory: Record<string, number> = {};
     const partnerInvestmentsByName: Record<string, number> = {};
@@ -1058,14 +1067,16 @@ const ReportsFinances = () => {
 
       const paid = safeNum(f.amountPaid);
       if (paid > 0) {
-        receiptsByCategory['Tuition Fees'] += paid;
+        const feeTypeName = f.customTypeName || f.type || 'Tuition Fee';
+        const label = `Fee Collection: ${feeTypeName}`;
+        receiptsByCategory[label] = (receiptsByCategory[label] || 0) + paid;
         totalReceipts += paid;
         if (isCashPaymentMode(f.paymentMode)) {
           cashReceipts += paid;
-          cashReceiptsByCategory['Tuition Fees (Cash)'] = (cashReceiptsByCategory['Tuition Fees (Cash)'] || 0) + paid;
+          cashReceiptsByCategory[`${feeTypeName} (Cash)`] = (cashReceiptsByCategory[`${feeTypeName} (Cash)`] || 0) + paid;
         } else {
           bankReceipts += paid;
-          bankReceiptsByCategory['Tuition Fees (Bank)'] = (bankReceiptsByCategory['Tuition Fees (Bank)'] || 0) + paid;
+          bankReceiptsByCategory[`${feeTypeName} (Bank)`] = (bankReceiptsByCategory[`${feeTypeName} (Bank)`] || 0) + paid;
         }
       }
     });
@@ -1589,7 +1600,7 @@ const ReportsFinances = () => {
       if (inRange(f.dueDate) && f.amountPaid) {
         const amt = safeNum(f.amountPaid);
         tuitionRevenue += amt;
-        const type = f.type || 'Monthly Tuition';
+        const type = f.customTypeName || f.type || 'Monthly Tuition';
         feesByType[type] = (feesByType[type] || 0) + amt;
       }
     });
@@ -1787,6 +1798,44 @@ const ReportsFinances = () => {
   const bs = processBalanceSheet();
   const pnl = processProfitAndLoss();
 
+  // Comprehensive fee and session tracking summary by fee head
+  const feeSummaryByService = useMemo(() => {
+    const summary: Record<string, {
+      name: string;
+      billingBasis: string;
+      totalBilled: number;
+      totalCollected: number;
+      balanceDue: number;
+      invoiceCount: number;
+      totalUnits: number;
+    }> = {};
+
+    fees.forEach(f => {
+      const name = f.customTypeName || f.type || 'Standard Tuition';
+      const basis = f.billingBasis || 'fixed';
+      if (!summary[name]) {
+        summary[name] = {
+          name,
+          billingBasis: basis,
+          totalBilled: 0,
+          totalCollected: 0,
+          balanceDue: 0,
+          invoiceCount: 0,
+          totalUnits: 0
+        };
+      }
+      const billed = safeNum(f.amount);
+      const collected = safeNum(f.amountPaid);
+      summary[name].totalBilled += billed;
+      summary[name].totalCollected += collected;
+      summary[name].balanceDue += Math.max(0, billed - collected);
+      summary[name].invoiceCount += 1;
+      summary[name].totalUnits += safeNum(f.units) || 1;
+    });
+
+    return Object.values(summary).sort((a, b) => b.totalBilled - a.totalBilled);
+  }, [fees]);
+
   const currentMonthIncome = financialTrends[financialTrends.length - 1]?.income || 0;
   const currentMonthExpense = financialTrends[financialTrends.length - 1]?.expense || 0;
   const currentMonthAssets = financialTrends[financialTrends.length - 1]?.assets || 0;
@@ -1961,7 +2010,7 @@ const ReportsFinances = () => {
     styleSectionHeaderRow(rRevH, 3, 'I. OPERATING REVENUES & FEE INCOMES', 'FFECFDF5', 'FF065F46');
 
     Object.entries(pnl.feesByType).forEach(([feeType, amt]) => {
-      const r = wsPnl.addRow(['Tuition Collections', `Tuition & Program Fees — ${feeType}`, amt]);
+      const r = wsPnl.addRow(['Fee Collections', `Fee Revenue — ${feeType}`, amt]);
       styleDataRow(r, 3, pnlRowIdx++ % 2 === 0);
       r.getCell(3).numFmt = NUMBER_FORMATS.currency;
       r.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
@@ -2042,6 +2091,79 @@ const ReportsFinances = () => {
 
     setupSheetViews(wsPnl, 5);
     autoFitWorksheetColumns(wsPnl, { 1: 30, 2: 44, 3: 24 });
+
+    // ----------------------------------------------------
+    // SHEET 3: FEE & SESSION REVENUE SCHEDULE
+    // ----------------------------------------------------
+    const wsFees = wb.addWorksheet('Fee & Session Schedule', {
+      properties: { tabColor: { argb: 'FF0D9488' } }
+    });
+    addExecutiveReportHeader(wsFees, {
+      title: 'Fee & Session Revenue Schedule',
+      subtitle: 'PROGRAM, SESSION & TUITION REVENUE REGISTER',
+      colSpan: 8,
+      periodLabel: `Active Student Billing Heads (${feeSummaryByService.length} Services)`,
+      asOfDate: new Date()
+    });
+
+    const hFees = wsFees.addRow([
+      'Fee / Session Name',
+      'Billing Structure',
+      'Invoices Assigned',
+      'Total Sessions / Units',
+      'Invoiced Amount (₹)',
+      'Collected Amount (₹)',
+      'Outstanding Dues (₹)',
+      'Collection Rate'
+    ]);
+    styleHeaderRow(hFees, 8, EXCEL_COLORS.navyHeader);
+
+    feeSummaryByService.forEach((item, idx) => {
+      const ratePct = item.totalBilled > 0 ? (item.totalCollected / item.totalBilled) : 0;
+      const isPerSession = item.billingBasis === 'per_session' ||
+        item.name.toLowerCase().includes('session') ||
+        item.name.toLowerCase().includes('speech') ||
+        item.name.toLowerCase().includes('special education') ||
+        item.name.toLowerCase().includes('assessment');
+      const r = wsFees.addRow([
+        item.name,
+        isPerSession ? 'Per Session' : (item.billingBasis === 'hourly' ? 'Hourly Daycare' : (item.billingBasis === 'custom' ? 'Custom Fee' : 'Fixed Tuition')),
+        item.invoiceCount,
+        isPerSession ? `${item.totalUnits} sessions` : `${item.totalUnits} units`,
+        item.totalBilled,
+        item.totalCollected,
+        item.balanceDue,
+        ratePct
+      ]);
+      styleDataRow(r, 8, idx % 2 === 0);
+      r.getCell(5).numFmt = NUMBER_FORMATS.currency;
+      r.getCell(6).numFmt = NUMBER_FORMATS.currency;
+      r.getCell(7).numFmt = NUMBER_FORMATS.currency;
+      r.getCell(8).numFmt = NUMBER_FORMATS.percentage;
+    });
+
+    const totalBilledVal = feeSummaryByService.reduce((s, i) => s + i.totalBilled, 0);
+    const totalCollectedVal = feeSummaryByService.reduce((s, i) => s + i.totalCollected, 0);
+    const totalDueVal = feeSummaryByService.reduce((s, i) => s + i.balanceDue, 0);
+    const overallRateVal = totalBilledVal > 0 ? totalCollectedVal / totalBilledVal : 0;
+    const rTotFees = wsFees.addRow([
+      'TOTAL FEE & SESSION REVENUES',
+      'ALL PROGRAM HEADS',
+      feeSummaryByService.reduce((s, i) => s + i.invoiceCount, 0),
+      '',
+      totalBilledVal,
+      totalCollectedVal,
+      totalDueVal,
+      overallRateVal
+    ]);
+    styleTotalRow(rTotFees, 8, { fillColor: 'FFD1FAE5', textColor: 'FF065F46' });
+    rTotFees.getCell(5).numFmt = NUMBER_FORMATS.currency;
+    rTotFees.getCell(6).numFmt = NUMBER_FORMATS.currency;
+    rTotFees.getCell(7).numFmt = NUMBER_FORMATS.currency;
+    rTotFees.getCell(8).numFmt = NUMBER_FORMATS.percentage;
+
+    setupSheetViews(wsFees, 5);
+    autoFitWorksheetColumns(wsFees, { 1: 32, 2: 20, 3: 18, 4: 22, 5: 22, 6: 22, 7: 22, 8: 18 });
 
     // ----------------------------------------------------
     // SHEET 3: BALANCE SHEET (FINANCIAL POSITION)
@@ -4340,13 +4462,13 @@ const ReportsFinances = () => {
                     </td>
                   </tr>
 
-                  {/* Tuition Fee Breakdown */}
+                  {/* Fee Revenue Breakdown */}
                   {Object.entries(pnl.feesByType).map(([feeType, amt]) => {
                     const pct = pnl.totalRevenue > 0 ? (amt / pnl.totalRevenue) * 100 : 0;
                     return (
                       <tr key={feeType} className="hover:bg-gray-50/80">
                         <td className="py-2.5 px-4 pl-8 text-gray-700 font-medium">
-                          Tuition Fees: {feeType}
+                          Fee Revenue: <span className="font-bold text-gray-900">{feeType}</span>
                         </td>
                         <td className="py-2.5 px-4 text-center text-xs text-gray-500">Student Receipts</td>
                         <td className="py-2.5 px-4 text-right text-xs text-gray-500">{pct.toFixed(1)}%</td>
@@ -4855,6 +4977,120 @@ const ReportsFinances = () => {
                   No activity sessions recorded this month.
                 </div>
               )}
+            </div>
+          </div>
+
+          {/* Student Fee & Session Revenue Tracking Schedule */}
+          <div className="bg-white shadow rounded-lg overflow-hidden mb-8 border border-gray-200">
+            <div className="px-5 py-4 border-b border-gray-200 sm:flex sm:items-center sm:justify-between bg-gradient-to-r from-indigo-50/60 via-purple-50/40 to-white">
+              <div>
+                <h3 className="text-base sm:text-lg font-bold text-gray-900 flex items-center gap-2">
+                  <Layers className="w-5 h-5 text-indigo-600" />
+                  <span>Student Fee & Session Revenue Tracking</span>
+                </h3>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Real-time billing, collection, and due balances across Special Education, Speech Therapy, Speech Assessment, and all fee heads
+                </p>
+              </div>
+              <div className="mt-2 sm:mt-0 flex flex-wrap items-center gap-2 text-xs">
+                <span className="bg-emerald-100 text-emerald-800 px-2.5 py-1 rounded-md font-semibold">
+                  Total Collected: ₹{feeSummaryByService.reduce((s, i) => s + i.totalCollected, 0).toLocaleString('en-IN')}
+                </span>
+                <span className="bg-rose-100 text-rose-800 px-2.5 py-1 rounded-md font-semibold">
+                  Receivables Due: ₹{feeSummaryByService.reduce((s, i) => s + i.balanceDue, 0).toLocaleString('en-IN')}
+                </span>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-gray-200 text-sm">
+                <thead className="bg-gray-50 text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                  <tr>
+                    <th className="py-3 px-4 text-left">Fee / Session Name</th>
+                    <th className="py-3 px-4 text-left">Structure</th>
+                    <th className="py-3 px-4 text-center">Invoices</th>
+                    <th className="py-3 px-4 text-center">Sessions / Units</th>
+                    <th className="py-3 px-4 text-right">Invoiced (₹)</th>
+                    <th className="py-3 px-4 text-right">Collected (₹)</th>
+                    <th className="py-3 px-4 text-right">Balance Due (₹)</th>
+                    <th className="py-3 px-4 text-right">Collection Rate</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 bg-white">
+                  {feeSummaryByService.length === 0 ? (
+                    <tr>
+                      <td colSpan={8} className="py-8 text-center text-gray-400 text-sm">
+                        No student fee records found in system.
+                      </td>
+                    </tr>
+                  ) : (
+                    feeSummaryByService.map(item => {
+                      const ratePct = item.totalBilled > 0 ? (item.totalCollected / item.totalBilled) * 100 : 0;
+                      const isPerSession = item.billingBasis === 'per_session' ||
+                        item.name.toLowerCase().includes('session') ||
+                        item.name.toLowerCase().includes('speech') ||
+                        item.name.toLowerCase().includes('special education') ||
+                        item.name.toLowerCase().includes('assessment');
+                      return (
+                        <tr key={item.name} className="hover:bg-indigo-50/40 transition-colors">
+                          <td className="py-3 px-4 font-bold text-gray-900 flex items-center gap-2">
+                            <span className={`w-2 h-2 rounded-full ${isPerSession ? 'bg-indigo-600' : 'bg-emerald-600'}`}></span>
+                            <span>{item.name}</span>
+                          </td>
+                          <td className="py-3 px-4 text-xs">
+                            {isPerSession ? (
+                              <span className="inline-flex items-center gap-1 bg-indigo-50 text-indigo-800 border border-indigo-200 px-2 py-0.5 rounded font-medium">
+                                <Layers className="w-3 h-3 text-indigo-600" />
+                                Per Session
+                              </span>
+                            ) : item.billingBasis === 'hourly' ? (
+                              <span className="inline-flex items-center gap-1 bg-sky-50 text-sky-800 border border-sky-200 px-2 py-0.5 rounded font-medium">
+                                <Timer className="w-3 h-3 text-sky-600" />
+                                Hourly
+                              </span>
+                            ) : item.billingBasis === 'custom' ? (
+                              <span className="inline-flex items-center gap-1 bg-purple-50 text-purple-800 border border-purple-200 px-2 py-0.5 rounded font-medium">
+                                <Sparkles className="w-3 h-3 text-purple-600" />
+                                Custom Fee
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 bg-stone-100 text-stone-700 px-2 py-0.5 rounded font-medium">
+                                Fixed
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-3 px-4 text-center text-gray-600 font-medium">
+                            {item.invoiceCount}
+                          </td>
+                          <td className="py-3 px-4 text-center font-semibold text-indigo-900">
+                            {isPerSession ? `${item.totalUnits} sessions` : `${item.totalUnits} units`}
+                          </td>
+                          <td className="py-3 px-4 text-right font-medium text-gray-900">
+                            ₹{item.totalBilled.toLocaleString('en-IN')}
+                          </td>
+                          <td className="py-3 px-4 text-right font-bold text-emerald-700">
+                            ₹{item.totalCollected.toLocaleString('en-IN')}
+                          </td>
+                          <td className="py-3 px-4 text-right font-semibold text-rose-600">
+                            {item.balanceDue > 0 ? `₹${item.balanceDue.toLocaleString('en-IN')}` : '₹0'}
+                          </td>
+                          <td className="py-3 px-4 text-right">
+                            <div className="flex items-center justify-end gap-2">
+                              <span className="text-xs font-bold text-gray-700">{ratePct.toFixed(0)}%</span>
+                              <div className="w-16 bg-gray-200 rounded-full h-1.5 overflow-hidden">
+                                <div
+                                  className={`h-full rounded-full ${ratePct >= 90 ? 'bg-emerald-500' : ratePct >= 50 ? 'bg-indigo-500' : 'bg-amber-500'}`}
+                                  style={{ width: `${Math.min(100, ratePct)}%` }}
+                                ></div>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
             </div>
           </div>
 

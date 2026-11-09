@@ -532,6 +532,22 @@ export const getRawEntriesForAccount = (
     fees.forEach(f => {
       const paid = safeNum(f.amountPaid);
       if (paid > 0 && !isCashMode(f.paymentMode)) {
+        const typeLower = (f.type || '').toLowerCase();
+        const customLower = (f.customTypeName || '').toLowerCase();
+        const isSession = f.billingBasis === 'per_session' ||
+          typeLower.includes('session') ||
+          typeLower.includes('special education') ||
+          typeLower.includes('speech') ||
+          typeLower.includes('assessment') ||
+          typeLower.includes('therapy') ||
+          customLower.includes('session') ||
+          customLower.includes('therapy');
+        const isReg = typeLower.includes('registration') || typeLower.includes('admission');
+        const counterCode = isSession ? '4020' : (isReg ? '4030' : '4010');
+        const counterName = isSession
+          ? 'Specialized Child Care & Activity Session Fees'
+          : (isReg ? 'Child Admission & Registration Fees' : 'Tuition & Child Care Revenue');
+
         const date = f.dueDate || (f.createdAt ? f.createdAt.split('T')[0] : '2026-01-01');
         entries.push({
           id: `fee-${f.id || Math.random()}`,
@@ -539,9 +555,9 @@ export const getRawEntriesForAccount = (
           voucherNumber: `FEE-${f.id ? f.id.slice(-6).toUpperCase() : 'REC'}`,
           accountCode: '1010',
           accountName: account.name,
-          counterAccountCode: '4010',
-          counterAccountName: 'Tuition & Child Care Revenue',
-          particulars: `Fee Collection: ${f.studentName} - ${f.type || 'Child Care Fee'}${f.notes ? ` (${f.notes})` : ''}`,
+          counterAccountCode: counterCode,
+          counterAccountName: counterName,
+          particulars: `Fee Collection: ${f.studentName} - ${f.customTypeName || f.type || 'Child Care Fee'}${f.notes ? ` (${f.notes})` : ''}`,
           paymentMode: f.paymentMode || 'Bank / Online Transfer',
           debit: paid,
           credit: 0,
@@ -752,15 +768,31 @@ export const getRawEntriesForAccount = (
       const paid = safeNum(f.amountPaid);
       if (paid > 0 && isCashMode(f.paymentMode)) {
         const date = f.dueDate || (f.createdAt ? f.createdAt.split('T')[0] : '2026-01-01');
+        const typeLower = (f.type || '').toLowerCase();
+        const customLower = (f.customTypeName || '').toLowerCase();
+        const isSession = f.billingBasis === 'per_session' ||
+          typeLower.includes('session') ||
+          typeLower.includes('special education') ||
+          typeLower.includes('speech') ||
+          typeLower.includes('assessment') ||
+          typeLower.includes('therapy') ||
+          customLower.includes('session') ||
+          customLower.includes('therapy');
+        const isReg = typeLower.includes('registration') || typeLower.includes('admission');
+        const counterCode = isSession ? '4020' : (isReg ? '4030' : '4010');
+        const counterName = isSession
+          ? 'Specialized Child Care & Activity Session Fees'
+          : (isReg ? 'Child Admission & Registration Fees' : 'Tuition & Child Care Revenue');
+
         entries.push({
           id: `fee-cash-${f.id || Math.random()}`,
           date,
           voucherNumber: `CSH-${f.id ? f.id.slice(-6).toUpperCase() : 'REC'}`,
           accountCode: '1020',
           accountName: account.name,
-          counterAccountCode: '4010',
-          counterAccountName: 'Tuition & Child Care Revenue',
-          particulars: `Walk-in Cash Fee: ${f.studentName} - ${f.type || 'Child Care Fee'}`,
+          counterAccountCode: counterCode,
+          counterAccountName: counterName,
+          particulars: `Walk-in Cash Fee: ${f.studentName} - ${f.customTypeName || f.type || 'Child Care Fee'}`,
           paymentMode: 'Cash',
           debit: paid,
           credit: 0,
@@ -1006,14 +1038,25 @@ export const getRawEntriesForAccount = (
       const paid = safeNum(f.amountPaid);
       if (paid > 0) {
         let matches = false;
-        if (code === '4020' && (f.billingBasis === 'per_session' || f.type?.toLowerCase().includes('session') || f.type?.toLowerCase().includes('special education') || f.type?.toLowerCase().includes('speech') || f.type?.toLowerCase().includes('ot'))) {
+        const typeLower = (f.type || '').toLowerCase();
+        const customLower = (f.customTypeName || '').toLowerCase();
+        const isSession = f.billingBasis === 'per_session' ||
+          typeLower.includes('session') ||
+          typeLower.includes('special education') ||
+          typeLower.includes('speech') ||
+          typeLower.includes('assessment') ||
+          typeLower.includes('therapy') ||
+          typeLower.includes('ot') ||
+          customLower.includes('session') ||
+          customLower.includes('therapy');
+        const isReg = typeLower.includes('registration') || typeLower.includes('admission');
+
+        if (code === '4020' && isSession) {
           matches = true;
-        } else if (code === '4030' && (f.type?.toLowerCase().includes('registration') || f.type?.toLowerCase().includes('admission'))) {
+        } else if (code === '4030' && isReg) {
           matches = true;
         } else if (code === '4010') {
           // If not 4020 and not 4030, treat as general tuition revenue
-          const isSession = f.billingBasis === 'per_session' || f.type?.toLowerCase().includes('session') || f.type?.toLowerCase().includes('special education') || f.type?.toLowerCase().includes('speech') || f.type?.toLowerCase().includes('ot');
-          const isReg = f.type?.toLowerCase().includes('registration') || f.type?.toLowerCase().includes('admission');
           if (!isSession && !isReg) matches = true;
         }
 
@@ -1028,7 +1071,7 @@ export const getRawEntriesForAccount = (
             accountName: account.name,
             counterAccountCode: isCash ? '1020' : '1010',
             counterAccountName: isCash ? 'Petty Cash & Cash Drawer' : 'Operating Bank Account',
-            particulars: `Fee Revenue Earned: ${f.studentName} (${f.type || 'Child Care Fee'})`,
+            particulars: `Fee Revenue Earned: ${f.studentName} (${f.customTypeName || f.type || 'Child Care Fee'})`,
             paymentMode: f.paymentMode || 'Bank / Online',
             debit: 0,
             credit: paid,
